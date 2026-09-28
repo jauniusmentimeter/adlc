@@ -1,6 +1,7 @@
 {
   "body": "Source: repo-bloat review (rev-scripts-ci finding 4). scripts/opencode-install-smoke.mjs is 336 lines of code that is un-wired (not in scripts/run-tests.mjs SEGMENTS, not in any workflow, not called from any test). It fails with exit 2 due to legacy ticket store path expectations.\n\nRetire scripts/opencode-install-smoke.mjs and clean up its references:\n1. Delete scripts/opencode-install-smoke.mjs.\n2. In apps/docs/lib/integration-facts.mjs, update the OpenCode operate command line from 'node scripts/opencode-install-smoke.mjs .' to 'npm test --workspace=@adlc/opencode'.\n3. In docs/integrations/opencode.md and apps/docs/content/docs/integrations/opencode.mdx, update the offline contract command reference.\n4. In scripts/cursor-install-smoke.mjs, remove references to opencode-install-smoke.mjs in comments.\n\nACCEPTANCE CRITERIA:\n- AC1 scripts/opencode-install-smoke.mjs is deleted.\n- AC2 node --test apps/docs/test/*.test.mjs passes all tests.\n- AC3 git grep opencode-install-smoke outside git history returns 0 matches.\n- AC4 scripts/test/tmp-fixture-boundary.test.mjs remains untouched (rail-freeze clean).\n- AC5 adlc rails-guard exits 0.",
   "category": "chore",
+  "completed": true,
   "duration": 1,
   "edges": [],
   "id": "T-01M3M4GV313ZMG7J3NH2RYX0F7",
