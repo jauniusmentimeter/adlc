@@ -1,0 +1,14 @@
+{
+  "body": "Source: repo-bloat review (rev-docs-hygiene finding). docs/marketing/2026-07-05-adlc-marketing-site-design.md is 305 lines of historical design exhaust from early marketing site implementation. The site is live, and no code, active ticket, or test references this file (its only citation is historical text in completed ticket t38).\n\nDelete docs/marketing/2026-07-05-adlc-marketing-site-design.md:\n1. Delete docs/marketing/2026-07-05-adlc-marketing-site-design.md.\n2. Confirm all surviving documentation suites pass cleanly.\n\nACCEPTANCE CRITERIA:\n- AC1 docs/marketing/2026-07-05-adlc-marketing-site-design.md is deleted.\n- AC2 git grep 2026-07-05-adlc-marketing-site-design outside completed tickets returns 0 matches.\n- AC3 scripts/test/tmp-fixture-boundary.test.mjs remains untouched (rail-freeze clean).\n- AC4 adlc rails-guard exits 0.",
+  "category": "docs",
+  "duration": 1,
+  "edges": [],
+  "id": "T-01M3M4GYAADJ6DDM2ZG5HZ9S7Y",
+  "rails": [
+    "scripts/test/tmp-fixture-boundary.test.mjs"
+  ],
+  "scope": [
+    "docs/marketing/2026-07-05-adlc-marketing-site-design.md"
+  ],
+  "title": "docs: delete unreferenced historical marketing site design doc"
+}
