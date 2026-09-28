@@ -1,6 +1,7 @@
 {
   "body": "Source: GitHub issue #1055 (follow-up from #1043 / PR #1046). Now that Wave 6 Batch 6B has fully eradicated all allowlisted fleet test suites, the ALLOWLIST set in scripts/test/tmp-fixture-boundary.test.mjs has reached exactly 0 entries (new Set([])).\n\nTo permanently lock this milestone and prevent any future PR or agent under pressure from expanding the allowlist or bypassing fixture cleanup obligations:\n1. In scripts/test/tmp-fixture-boundary.test.mjs:\n   - Add explicit assertion in 'the allowlist may only shrink' test:\n     assert.equal(ALLOWLIST.size, 0, 'ALLOWLIST has reached 0 and must remain empty — fixture leaking is 100% eradicated across the repository');\n   - Update file header JSDoc comments to document that the allowlist was completely eradicated (0 files leaking across the repository) and that any addition to ALLOWLIST is forbidden by contract.\n2. Verification:\n   - node --test scripts/test/tmp-fixture-boundary.test.mjs exits 0 (10/10 tests pass).\n   - Verify that adding a dummy entry to ALLOWLIST immediately triggers a failure.\n   - All workspace scripts tests pass: node scripts/run-tests.mjs scripts.\n\nACCEPTANCE CRITERIA:\n- AC1 ALLOWLIST in scripts/test/tmp-fixture-boundary.test.mjs is asserted to have size 0.\n- AC2 node --test scripts/test/tmp-fixture-boundary.test.mjs passes all tests.\n- AC3 A non-empty ALLOWLIST is rejected by the test runner.\n- AC4 adlc rails-guard exits 0.",
   "category": "test",
+  "completed": true,
   "duration": 1,
   "edges": [],
   "id": "T-01M3KV7B1HGRBT5XNSAT60B1MF",
