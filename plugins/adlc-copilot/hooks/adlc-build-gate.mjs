@@ -35,8 +35,9 @@
 // scripts/test/ticket-store-boundary.test.mjs enforces that the pointer has
 // exactly one reader across the whole repo.
 
-import { existsSync, readFileSync, openSync, fstatSync, readSync, closeSync, writeSync } from 'node:fs';
+import { existsSync, readFileSync, openSync, fstatSync, readSync, closeSync, writeSync, statSync, realpathSync, lstatSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadTicketStoreReadOnly, ticketStoreExists } from './generated-ticket-reader.mjs';
 import { resolveActiveTicketId as resolveActiveTicketIdCanonical } from './generated-active-ticket.mjs';
@@ -222,14 +223,134 @@ function tailBytes(path, maxBytes) {
 // Bypass recording — shells to the globally-installed `adlc` binary, exactly
 // like Claude Code's recordBuildGateBypass, so manifest entries stay
 // harness-agnostic (same gate name: build-gate-bypass).
+//
+// KEEP IN SYNC with plugins/adlc-codex/hooks/adlc-build-gate.mjs's
+// recordBuildGateBypass and adlc-handoff-gate.mjs's resolveTrustedBinary /
+// RECOVERY_AUDIT_ENV_ALLOWLIST. Inlined because this hook runs from the
+// plugin's installed location, which has no node_modules to import from.
+//
+// A repository can plant `node_modules/.bin/adlc` ahead of a real install, and
+// a resolved binary's provenance cannot be fully verified, so the binary is
+// resolved with node_modules entries skipped and its child sees only an
+// allowlisted environment: never ADLC_MANIFEST_KEY, ADLC_ADMIN_KEY, or any
+// other credential the operator's shell exports.
 // ---------------------------------------------------------------------------
 
+/** The only variables the bypass recorder's child inherits. */
+export const BYPASS_RECORD_ENV_ALLOWLIST = Object.freeze([
+  'PATH',
+  'HOME',
+  'NODE_PATH',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'USER',
+  'LOGNAME',
+]);
+
+// A recorder that never exits is killed after this long. The killed child has
+// no exit status, so the bypass counts as unrecorded and the gate denies —
+// promptly, instead of holding the tool call until the host gives up.
+const BYPASS_RECORD_TIMEOUT_MS = 5000;
+
+/**
+ * First `name` on `pathEnv` that is a regular file owned by this process's uid
+ * and does not sit inside a node_modules directory, or null. Never throws.
+ */
+export function resolveTrustedBinary(name, pathEnv) {
+  if (typeof pathEnv !== 'string' || pathEnv.length === 0) return null;
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const selfUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  for (const dir of pathEnv.split(sep)) {
+    if (!dir || dir.includes('node_modules')) continue;
+    const candidate = join(dir, name);
+    try {
+      const st = statSync(candidate);
+      if (!st.isFile()) continue;
+      if (selfUid !== null && st.uid !== selfUid) continue;
+      return candidate;
+    } catch {
+      /* try the next PATH entry */
+    }
+  }
+  return null;
+}
+
+function allowlistedEnv(env) {
+  return Object.fromEntries(
+    BYPASS_RECORD_ENV_ALLOWLIST.filter((name) => env[name] !== undefined).map((name) => [name, env[name]]),
+  );
+}
+
+const MANIFEST_SCAN_MAX_FILES = 500;
+const MANIFEST_SCAN_MAX_BYTES_PER_FILE = 1024 * 1024;
+const MANIFEST_SCAN_DEADLINE_MS = 1000;
+
+/**
+ * Whether any entry in `.adlc/manifest.jsonl` or `.adlc/manifest.d/*.jsonl`
+ * under `repoRoot` carries a signature. Returns true whenever that cannot be
+ * ruled out: a non-regular file, an oversized file, a malformed line, too many
+ * segments, an I/O error or an exhausted time budget. Never throws.
+ * KEEP IN SYNC with repoManifestChainIsSigned in plugins/adlc-codex/hooks/adlc-handoff-gate.mjs.
+ */
+export function manifestChainIsSigned(repoRoot) {
+  const startMs = Date.now();
+  try {
+    const files = [];
+    const root = join(repoRoot, '.adlc', 'manifest.jsonl');
+    if (existsSync(root)) files.push(root);
+    const segDir = join(repoRoot, '.adlc', 'manifest.d');
+    if (existsSync(segDir)) {
+      if (!lstatSync(segDir).isDirectory()) return true;
+      const names = readdirSync(segDir);
+      if (names.length > MANIFEST_SCAN_MAX_FILES) return true;
+      for (const name of names) if (name.endsWith('.jsonl')) files.push(join(segDir, name));
+    }
+    for (const file of files) {
+      if (Date.now() - startMs > MANIFEST_SCAN_DEADLINE_MS) return true;
+      const st = lstatSync(file);
+      if (!st.isFile() || st.size > MANIFEST_SCAN_MAX_BYTES_PER_FILE) return true;
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        if (!line.trim()) continue;
+        const entry = JSON.parse(line);
+        if (entry && typeof entry.sig === 'string' && entry.sig.length > 0) return true;
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export function recordBuildGateBypass(ticketId, signals, depth, sessionBytes, { cwd } = {}) {
-  const result = spawnSync('adlc', [
+  // The child never receives a signing key, and an unsigned entry after a
+  // signed one corrupts the chain, so a signed chain leaves the bypass
+  // unrecorded and the gate denies.
+  if (manifestChainIsSigned(cwd ?? process.cwd())) return false;
+  const adlcBinPath = resolveTrustedBinary('adlc', process.env.PATH);
+  if (!adlcBinPath) return false;
+  // A global install links an extensionless `adlc` to a `.mjs` target, and Node
+  // decides an extensionless entry point's module type differently across
+  // versions; running the real, extensioned path makes it unambiguous. Invoking
+  // it through this process's own interpreter also avoids the shebang's second,
+  // unfiltered PATH lookup for `node`.
+  let binPath = adlcBinPath;
+  try { binPath = realpathSync(adlcBinPath); } catch { /* use the candidate as-is */ }
+  const args = [
+    binPath,
     'gate-manifest', 'record', 'build-gate-bypass',
     '--ticket', ticketId,
     '--data', JSON.stringify({ signals, depth, sessionBytes }),
-  ], { encoding: 'utf8', ...(cwd ? { cwd } : {}) });
+  ];
+  const result = spawnSync(process.execPath, args, {
+    encoding: 'utf8',
+    env: allowlistedEnv(process.env),
+    timeout: BYPASS_RECORD_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+    ...(cwd ? { cwd } : {}),
+  });
   return !!result && result.status === 0;
 }
 
