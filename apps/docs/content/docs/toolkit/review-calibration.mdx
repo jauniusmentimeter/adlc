@@ -28,10 +28,22 @@ never be bounded — that run still completes and reports
 machine consumer. When no finding located a plant the judge was never consulted,
 and `configuredJudgeBounded` / `configuredJudgeEchoRecall` are `null`.
 
-When `truePositives + falsePositives === 0` (e.g.
-a reviewer produces zero findings, or none locating plants), `precision` is `null`
-(not 1.0) because precision cannot be evaluated; configuring `--min-precision`
-will fail the gate if precision is `null`.
+A false positive is a finding that locates no plant, or one that locates a plant
+but identifies no plant's defect (for example an echo of the changed line), so
+padding a real catch with echoes lowers `precision`; `unsubstantiated` counts
+the second kind. When `truePositives + falsePositives === 0` (the reviewer
+produced no findings), `precision` is `null` (not 1.0) because precision cannot
+be evaluated; configuring `--min-precision` will fail the gate if precision is
+`null`.
+
+## Safety
+
+The tool refuses to run on a dirty tree. Plants are written and restored
+atomically. A run killed mid-review (SIGTERM, SIGKILL) cannot restore its own
+plants, so before planting it records each file's original and planted contents
+in `.git/adlc-review-calibration-inflight.json`; the next run restores them
+before its dirty-tree check. A file that changed since it was planted is never
+overwritten: the run refuses and keeps the record, which holds the original.
 
 ## Usage
 

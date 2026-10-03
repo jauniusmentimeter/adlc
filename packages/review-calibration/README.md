@@ -22,7 +22,10 @@ This is mutation testing aimed at the *reviewer* instead of the code (ADLC C8).
 3. **Equivalent-mutant filter**: a plant with a witness must DISCRIMINATE
    (pass on the original, fail on the mutant). Plants whose witness does not
    discriminate are equivalent mutants — there is no bug to find, so they are
-   excluded from the denominator rather than scored as missed.
+   excluded from the denominator rather than scored as missed. Each exclusion is
+   printed to stderr with its reason; a witness that fails on the ORIGINAL (a
+   broken witness rather than an equivalent mutant) includes the tail of that
+   run's output, and one that cannot start says so instead of "timed out".
 4. **Control self-test (scorer)**: before scoring, two reference reviewers run
    through the deterministic `referenceJudge` — an *echoer* (must score ~0) and
    an *oracle* (must score 1.0). If either is wrong the scorer itself is broken
@@ -41,14 +44,17 @@ This is mutation testing aimed at the *reviewer* instead of the code (ADLC C8).
    `configuredJudgeBounded` and `configuredJudgeEchoRecall` are `null` — it
    contributed nothing to the score, so there was nothing to bound.
 5. **Apply all plants**, **run `--review-cmd`** (`{base}` → commit ref), **restore**
-   (always, via `finally` + SIGINT handler).
+   (atomically, via `finally` + SIGINT handler; a killed run is restored by
+   the next one — see Safety).
 6. **Parse findings**: the reviewer's output is parsed as structured findings
    (adversarial-review `--json` shape, or a weak prose fallback).
 7. **Score**: a plant is CAUGHT only when a finding LOCATES it (file + line ±3)
-   **AND** identifies the defect — verified behaviorally (a reviewer-supplied
-   `repro` that discriminates) or judged semantically by a cheap model. There is
+   **AND** the configured judge (a cheap model) confirms it identifies the defect.
+   A `repro` field on a finding is parsed but never run: the CLI does not execute
+   commands supplied by the reviewer it is measuring. There is
    **no string-match shortcut**: a reviewer that echoes changed lines scores ~0.
-   Recall = caught / valid plants. Precision = true / (true + spurious findings).
+   Recall = caught / valid plants. Precision = true / (true + spurious findings),
+   where a finding that locates a plant without identifying it is spurious.
 8. **Gate**: Exit 2 if recall < `--min-recall` (or precision < `--min-precision`
    when set); exit 0 otherwise. Exit 1 on operational error or a failed control.
 
@@ -57,7 +63,7 @@ This is mutation testing aimed at the *reviewer* instead of the code (ADLC C8).
 - **`judge`** (default) — cheap-model semantic match. Requires an LLM provider
   (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`). With no provider
   the tool **fails closed** (exit 1) rather than emit an untrustworthy number.
-  A reviewer-supplied `repro` is verified behaviorally and bypasses the judge.
+  Every locating finding is judged, including one that carries a `repro`.
 - **`string`** — LEGACY location-only matching. Gameable by a reviewer that
   echoes changed lines; prints a warning and is not a trustworthy recall number.
   Provided only as an offline escape hatch.
@@ -67,8 +73,20 @@ See `REDESIGN.md` for the full design and the rationale for each decision.
 ## Safety
 
 - **Refuses to run on a dirty working tree** (opError, exit 1). Commit or stash first.
-- Files are **always restored** — `finally` block in the runner + SIGINT handler
-  in the CLI.
+- Plants are written and restored **atomically** (temp file + rename), so no
+  source file is ever left truncated.
+- On a normal exit, an error or Ctrl-C, files are restored by the runner's
+  `finally` block (and the CLI's SIGINT handler).
+- A run **killed** mid-review (SIGTERM from a CI cancel, `docker stop`, SIGKILL)
+  cannot restore anything itself — the review runs inside `spawnSync`, where no
+  signal handler runs. Before planting, the CLI writes an in-flight record of
+  each file's original and planted contents to the git dir
+  (`.git/adlc-review-calibration-inflight.json`). The **next run** restores
+  those files before its dirty-tree check and says so on stderr. It only
+  restores a file that still holds exactly the planted content; if the file has
+  changed since, it refuses (exit 1), writes nothing and keeps the record, which
+  then holds the only copy of the original. A record owned by a process that is
+  still running is left alone (exit 1).
 - Exit codes from the review command: 0 and 2 are valid (pass / gate-fail).
   Any other exit code is treated as a crash (opError, exit 1).
 
@@ -171,18 +189,22 @@ review-calibration \
 
 `precision` is real: `truePositives / (truePositives + falsePositives)`, where a
 false positive is a finding that locates no plant (in a clean base + only-our-plants
-tree, nothing else is broken). When `truePositives + falsePositives === 0` (e.g.
-a reviewer produces zero findings, or none locating plants), `precision` is `null`
-(not 1.0) because precision cannot be evaluated; configuring `--min-precision`
-will fail the gate if precision is `null`.
+tree, nothing else is broken) **or** one that locates a plant but identifies no
+plant's defect — an unsubstantiated claim such as an echo of the changed line.
+Every locating finding gets its own verdict, so padding a real catch with echoes
+lowers precision. `unsubstantiated` reports how many of the false positives were
+of the second kind. When `truePositives + falsePositives === 0` (the reviewer
+produced no findings), `precision` is `null` (not 1.0) because precision cannot
+be evaluated; configuring `--min-precision` will fail the gate if precision is
+`null`.
 
 ## Scoring logic
 
 **Caught** — a plant is caught only when a finding does BOTH:
 1. **Locates** it — mentions the file's basename and a line within ±3.
-2. **Identifies** it — a reviewer-supplied `repro` discriminates the mutant from
-   the original (model-free), or a cheap-model judge confirms the finding
-   describes *this* defect.
+2. **Identifies** it — a cheap-model judge confirms the finding describes *this*
+   defect. (`scorePlants` accepts an injected `verifyRepro` for library callers;
+   the CLI does not supply one.)
 
 There is no "output contains a substring of the changed line" rule: that is
 exactly what let a line-echoing reviewer score 1.0. Echoing locates but does not
