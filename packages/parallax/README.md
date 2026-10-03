@@ -58,9 +58,10 @@ parallax --route "question" --context spec.md --context arch.md
 | `--record-verdict <file\|->` | — | With `--prompt-only`: read the operator's answer from `<file>` (or stdin when `-`) and record it into `.adlc/manifest.jsonl` via `gate-manifest` (all three modes). Requires `--ticket`. |
 | `--ticket <id>` | — | Ticket this run is evidence for. Required with `--record-verdict` — an unbound record can satisfy any ticket's P1 gate. |
 
-`--context` file content (route mode) and ticket bodies (edge mode) are repository-controlled
-— anyone who can open a PR against this repo, or add a ticket, controls them. Both are treated
-as **untrusted data**: they are wrapped in an unguessable fence before being embedded in a
+`--context` file content (route mode) and ticket titles and bodies (edge mode) are
+repository-controlled — anyone who can open a PR against this repo, or add a ticket, controls
+them — and the fan's readings and answers are model output derived from that text before a
+judge reads them. All of it is treated as **untrusted data**: they are wrapped in an unguessable fence before being embedded in a
 prompt, with a standing directive telling the model the fenced content is data to analyze,
 never an instruction to follow, even if it reads like one.
 
@@ -71,13 +72,13 @@ never an instruction to follow, even if it reads like one.
 | Code | Meaning |
 |------|---------|
 | 0 | Gate passes — ambiguity score ≤ threshold (spec/edge), or answers equivalent (route) |
-| 1 | Operational error — bad input, missing file, network failure, insufficient readings, a shrunken fan without `--allow-partial-fan`, or an off-schema divergence payload |
+| 1 | Operational error — bad input, missing file, network failure, insufficient readings, a shrunken fan without `--allow-partial-fan`, or an off-schema divergence or route judge payload |
 | 2 | Gate fails — ambiguity score > threshold (spec/edge), or answers diverge (route) |
 
 
 ### What a verdict requires
 
-parallax refuses to certify a reading it did not actually take. Two guards, both
+parallax refuses to certify a reading it did not actually take. Three guards, all
 operational errors (exit 1), never a score:
 
 - **Off-schema divergence payload.** The mid-tier divergence call is asked for
@@ -85,6 +86,12 @@ operational errors (exit 1), never a score:
   a bare array or a `{result: ...}` wrapper used to fall through to "zero
   divergences, zero agreements", which scores 0 and passes the gate — an
   unanalysed spec reported as unambiguous. Such a payload is now refused.
+- **Off-schema route judge payload.** The route equivalence judge is asked for
+  `{equivalent: boolean, answer, variants}`. `equivalent` must be a real
+  boolean (a string such as `"false"` is refused, not coerced), an equivalent
+  verdict must carry a non-empty `answer`, and a non-equivalent one at least one
+  string `variant`. Anything else is refused rather than reported as a pass
+  (with `--questions-json`, an empty frontier) or as an unmeasured divergence.
 - **Shrunken fan.** The score is measured across `--n` independent readings, so
   a fan narrowed by rate limits, timeouts or unparseable JSON measures a smaller
   sample and scores systematically LOWER — it biases toward a pass. When fewer
@@ -229,13 +236,13 @@ a file and pass `--record-verdict <file>` instead:
 ```sh
 # Does NOT work: both request and verdict want stdin — exits 1 with an
 # explanatory error instead of silently misreading input
-echo "Add a login page" | parallax --prompt-only --record-verdict -
+echo "Add a login page" | parallax --prompt-only --ticket T1 --record-verdict -
 
 # Works: request via --request, verdict via stdin
-parallax --request "Add a login page" --prompt-only --record-verdict -
+parallax --request "Add a login page" --prompt-only --ticket T1 --record-verdict -
 
 # Works: request via stdin, verdict via file
-echo "Add a login page" | parallax --prompt-only --record-verdict verdict.txt
+echo "Add a login page" | parallax --prompt-only --ticket T1 --record-verdict verdict.txt
 ```
 
 ---
