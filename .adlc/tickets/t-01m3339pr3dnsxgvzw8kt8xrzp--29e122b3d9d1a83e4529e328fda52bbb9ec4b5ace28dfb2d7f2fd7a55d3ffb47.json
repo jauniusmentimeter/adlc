@@ -6,6 +6,7 @@
     "Add a test in packages/init/test/misordered-gitignore.test.mjs or gitignore-manifest.test.mjs reproducing the mis-ordered .gitignore failure",
     "Update documentation in packages/init/README.md, docs/tools/init.md, and apps/docs/content/docs/toolkit/init.mdx"
   ],
+  "completed": true,
   "id": "T-01M3339PR3DNSXGVZW8KT8XRZP",
   "issue": 665,
   "package": "init",

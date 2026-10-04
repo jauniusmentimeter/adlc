@@ -6,6 +6,7 @@
     "Existing flail-detector test suite continues to pass",
     "Update documentation in packages/flail-detector/README.md, docs/tools/flail-detector.md, and apps/docs/content/docs/toolkit/flail-detector.mdx"
   ],
+  "completed": true,
   "id": "T-01M3339QPCYCXR7M47EFP7J2ET",
   "issue": 623,
   "package": "flail-detector",

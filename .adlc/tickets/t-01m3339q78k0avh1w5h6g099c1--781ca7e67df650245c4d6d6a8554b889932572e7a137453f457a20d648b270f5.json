@@ -6,6 +6,7 @@
     "Existing consensus-fix test suite continues to pass",
     "Update documentation in packages/consensus-fix/README.md, docs/tools/consensus-fix.md, and apps/docs/content/docs/toolkit/consensus-fix.mdx"
   ],
+  "completed": true,
   "id": "T-01M3339Q78K0AVH1W5H6G099C1",
   "issue": 600,
   "package": "consensus-fix",
