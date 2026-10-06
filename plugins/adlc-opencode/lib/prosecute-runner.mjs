@@ -93,15 +93,23 @@ export function replyModel(messages) {
   return ref?.providerID && ref?.id ? `${ref.providerID}/${ref.id}` : null;
 }
 
+/** An agent's configured model as a v2 ref, or null when unset or half known. */
+function agentModelRef(model) {
+  if (!model?.providerID || !model?.id) return null;
+  return { providerID: model.providerID, id: model.id, ...(model.variant ? { variant: model.variant } : {}) };
+}
+
 /** Bound on the one agent-listing call per run; a local server answers in milliseconds. */
 export const AGENT_LIST_TIMEOUT_MS = 5_000;
 
 /**
- * Ids of the agents registered in this OpenCode instance (`ctx.agent.list`, v2
- * `AgentListOutput.data[].id` — a file agent's id is its file name), or null
- * when the host cannot list them (no API, error, bad payload, or no answer
- * within `timeoutMs`). Never throws: an unlistable host keeps the pre-per-lens
- * behavior (every lens on the session model).
+ * The agents registered in this OpenCode instance (`ctx.agent.list`, v2
+ * `AgentListOutput.data[]`), as a Map from agent id (a file agent's id is its
+ * file name) to its configured model ref (`{ providerID, id, variant? }`, or
+ * null when the agent sets none). Null when the host cannot list them (no API,
+ * error, bad payload, or no answer within `timeoutMs`). Never throws: an
+ * unlistable host keeps the pre-per-lens behavior (every lens on the session
+ * model).
  */
 export async function listRegisteredAgents(agentApi, { directory, timeoutMs = AGENT_LIST_TIMEOUT_MS } = {}) {
   if (typeof agentApi?.list !== 'function') {
@@ -112,7 +120,8 @@ export async function listRegisteredAgents(agentApi, { directory, timeoutMs = AG
     const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); });
     const res = await Promise.race([agentApi.list(directory ? { location: { directory } } : undefined), timeout]);
     const list = res?.data ?? res;
-    return Array.isArray(list) ? new Set(list.map((a) => a?.id).filter((n) => typeof n === 'string')) : null;
+    if (!Array.isArray(list)) return null;
+    return new Map(list.filter((a) => typeof a?.id === 'string').map((a) => [a.id, agentModelRef(a.model)]));
   } catch {
     return null;
   } finally {
@@ -127,8 +136,10 @@ export async function listRegisteredAgents(agentApi, { directory, timeoutMs = AG
  * falls back to the prose protocol).
  *
  * A call whose `agent` is registered (`agentApi` = `ctx.agent`) creates the
- * child AS that agent, so OpenCode resolves the lens's own configured `model`
- * (agent frontmatter or `opencode.json` `agents.<id>.model`). The session's
+ * child AS that agent and, when the agent configures a `model` (frontmatter or
+ * `opencode.json` `agents.<id>.model`), passes that model explicitly: OpenCode
+ * v2 does not apply an agent's model to a plugin-created session (verified
+ * against the 2.0.23 binary — the child answered on the session model). The session's
  * permission rules are evaluated after the agent's, so the wildcard deny still
  * holds. v2 `session.prompt` has no system override, so the authoritative
  * packaged charter always leads the prompt text — a repo-controlled agent file
@@ -153,9 +164,11 @@ export function makeLensAsk(session, {
     registered ??= listRegisteredAgents(agentApi, { directory, timeoutMs: agentListTimeoutMs });
     const agents = await registered;
     const asAgent = Boolean(agent) && (agents?.has(agent) ?? false);
+    const agentModel = asAgent ? agents.get(agent) : null;
     let answered = null;
     const text = await ask(system ? `${system}\n\n---\n\n${prompt}` : prompt, {
       ...(asAgent ? { agent } : {}),
+      ...(agentModel ? { model: agentModel } : {}),
       onMessages: (messages) => { answered = replyModel(messages); },
     });
     onResolved?.({ agent, model: answered, agentModel: asAgent, agentsListed: agents !== null });

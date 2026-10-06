@@ -306,9 +306,10 @@ the tested `@adlc/core` helpers), not by prose-instructing the model to
 orchestrate. Each lens and the verifier run in an isolated child session
 (`ctx.session.create` → `prompt` → `wait` → `context`) created **as its own
 agent** (`agent: "prosecutor-<lens>"`) with **fail-closed read-only
-`permissions`**. Creating the child as the agent makes OpenCode resolve that
-lens's configured `model` — agent frontmatter or `opencode.json`
-`agents.<id>.model` — so each lens can run on a different model (advisory model
+`permissions`**, on that lens's configured `model` — agent frontmatter or
+`opencode.json` `agents.<id>.model`, read from `ctx.agent.list()` and passed
+to `session.create` explicitly, because OpenCode 2.x does not apply an agent's
+model to a session a plugin creates — so each lens can run on a different model (advisory model
 diversity; trust-root cross-model review still requires distinct providers and
 a signed attestation). v2's `prompt` has no per-call `system` field, so the
 authoritative packaged charter always leads the prompt text, ahead of the

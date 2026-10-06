@@ -77,10 +77,12 @@ test('AC2: makeLensAsk creates the child with lensPermissions and leads the prom
   assert.equal(calls.prompt[1].text, 'no system');
 });
 
-// ---- per-lens models: a registered lens runs AS its agent so its configured model applies ----
+// ---- per-lens models: a registered lens runs AS its agent, ON its configured model ----
 // `ctx.agent.list` resolves v2 `AgentListOutput` ({ location, data: AgentInfo[] });
 // a child's reply is the v2 `SessionMessageAssistant` carrying `model`.
-function lensHost(replyImpl, { agents = ALL_AGENTS, listing } = {}) {
+// `agentModel(id)` is the model each listed agent configures (null = none).
+const agentModelOf = (id) => ({ providerID: 'vercel', id: `vmc/adlc-${id}` });
+function lensHost(replyImpl, { agents = ALL_AGENTS, listing, agentModel = agentModelOf } = {}) {
   const calls = { creates: [], prompts: [], listings: 0 };
   const replies = new Map();
   const session = {
@@ -92,23 +94,42 @@ function lensHost(replyImpl, { agents = ALL_AGENTS, listing } = {}) {
   const agentApi = {
     list: listing ?? (async () => {
       calls.listings += 1;
-      return { location: { directory: '/repo' }, data: agents.map((id) => ({ id, name: id, mode: 'subagent', hidden: false, permissions: [] })) };
+      return { location: { directory: '/repo' }, data: agents.map((id) => ({ id, name: id, mode: 'subagent', hidden: false, permissions: [], ...(agentModel(id) ? { model: agentModel(id) } : {}) })) };
     }),
   };
   return { calls, session, agentApi };
 }
 const reply = (text, model) => ({ id: 'msg_a', type: 'assistant', agent: 'x', ...(model ? { model } : {}), content: [{ type: 'text', text }] });
 
-test('per-lens model: a registered agent creates the child AS that agent, charter still leads the prompt, still write-disabled', async () => {
+test('per-lens model: a registered agent creates the child AS that agent ON its model, charter still leads the prompt, still write-disabled', async () => {
   const host = lensHost(() => reply('ok'));
   const ask = makeLensAsk(host.session, { agentApi: host.agentApi, directory: '/repo' });
   const text = await ask({ agent: 'prosecutor-security', system: 'LENS SYSTEM PROMPT', prompt: 'find bugs' });
   assert.equal(text, 'ok');
   const created = host.calls.creates[0];
   assert.equal(created.agent, 'prosecutor-security');
-  assert.equal('model' in created, false, 'no explicit model: opencode resolves the agent model');
+  // OpenCode 2.x does not apply an agent's model to a plugin-created session
+  // (live-verified), so the agent's configured model must be passed explicitly.
+  assert.deepEqual(created.model, { providerID: 'vercel', id: 'vmc/adlc-prosecutor-security' }, "the agent's own model is passed");
   assert.deepEqual(created.permissions, lensPermissions(), 'the read-only allowlist still applies');
   assert.equal(host.calls.prompts[0].text, 'LENS SYSTEM PROMPT\n\n---\n\nfind bugs', 'the authoritative packaged charter is preserved');
+});
+
+test('per-lens model: an agent with no configured model is named but adds no model (session model applies)', async () => {
+  const host = lensHost(() => reply('ok'), { agentModel: () => null });
+  const ask = makeLensAsk(host.session, { agentApi: host.agentApi });
+  await ask({ agent: 'prosecutor-security', system: 'S', prompt: 'x' });
+  assert.equal(host.calls.creates[0].agent, 'prosecutor-security');
+  assert.equal('model' in host.calls.creates[0], false);
+});
+
+test("per-lens model: the agent's model overrides a factory model, and a variant is kept", async () => {
+  const host = lensHost(() => reply('ok'), { agentModel: (id) => ({ providerID: 'p', id: `m-${id}`, variant: 'high' }) });
+  const ask = makeLensAsk(host.session, { agentApi: host.agentApi, model: { providerID: 'p', id: 'session-default' } });
+  await ask({ agent: 'prosecutor-tests', system: 'S', prompt: 'x' });
+  await ask({ agent: 'not-listed', system: 'S', prompt: 'x' });
+  assert.deepEqual(host.calls.creates[0].model, { providerID: 'p', id: 'm-prosecutor-tests', variant: 'high' });
+  assert.deepEqual(host.calls.creates[1].model, { providerID: 'p', id: 'session-default' }, 'an unlisted agent keeps the factory model');
 });
 
 test('per-lens model: onResolved reports the model that answered and that the agent config was used', async () => {
@@ -176,7 +197,10 @@ test('per-lens model: a failing lens model is NOT retried on the session model (
 
 test('listRegisteredAgents / replyModel read the opencode v2 shapes', async () => {
   const list = (data) => ({ list: async () => ({ location: { directory: '/r' }, data }) });
-  assert.deepEqual(await listRegisteredAgents(list([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, {}])), new Set(['a', 'b']), 'ids, not display names');
+  assert.deepEqual(
+    await listRegisteredAgents(list([{ id: 'a', name: 'A', model: { providerID: 'p', id: 'm' } }, { id: 'b', name: 'B' }, { id: 'c', model: { providerID: 'p' } }, {}])),
+    new Map([['a', { providerID: 'p', id: 'm' }], ['b', null], ['c', null]]),
+    'keyed by id (not display name), each with its configured model; a half-known model is none');
   assert.equal(await listRegisteredAgents({}), null);
   assert.equal(await listRegisteredAgents(undefined), null);
   assert.equal(await listRegisteredAgents(list('nope')), null);

@@ -39,11 +39,13 @@ const glob = (pattern, value) => new RegExp(`^${pattern.split('*').map((s) => s.
 const effectFor = (rules, action) => rules.findLast((r) => glob(r.action, action) && glob(r.resource, '*'))?.effect ?? 'ask';
 
 // A real-shaped v2 session API: records every child create/prompt and scripts
-// lens findings + a confirming verifier verdict. Each child is answered by the
-// agent it was created as, on that agent's own model.
+// lens findings + a confirming verifier verdict. Like OpenCode 2.x, a child
+// answers on the model it was CREATED with — naming an agent alone does not
+// select that agent's model (a child created without one reports no model).
 const creates = [];
 const prompts = [];
 const childAgent = new Map();
+const childModel = new Map();
 const replies = new Map();
 const agentModel = (agent) => ({ providerID: 'live', id: `model-for-${agent}` });
 const session = {
@@ -51,6 +53,7 @@ const session = {
     creates.push(req);
     const id = `ses_child_${creates.length}`;
     childAgent.set(id, req.agent);
+    childModel.set(id, req.model);
     return { id };
   },
   prompt: async (req) => {
@@ -63,7 +66,7 @@ const session = {
   },
   wait: async () => {},
   context: async ({ sessionID }) => [{
-    type: 'assistant', agent: childAgent.get(sessionID) ?? 'build', model: agentModel(childAgent.get(sessionID)),
+    type: 'assistant', agent: childAgent.get(sessionID) ?? 'build', model: childModel.get(sessionID),
     content: [{ type: 'text', text: replies.get(sessionID) }],
   }],
 };

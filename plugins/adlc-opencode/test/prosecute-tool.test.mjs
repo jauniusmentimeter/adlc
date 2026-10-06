@@ -19,9 +19,10 @@ const fenced = (obj) => '```json\n' + JSON.stringify(obj) + '\n```';
 const TOOL_CTX = { sessionID: 'ses_parent', agent: 'build', messageID: 'msg_1', id: 'call_1' };
 const VERIFIER_PROMPT = makeAgentPromptReader(PKG)(VERIFIER.agent);
 
-// a v2 `ctx.session` whose child replies are scripted from the prompt text;
-// `model(create)` optionally names the model that answered (v2
-// `SessionMessageAssistant.model`), given the child's create request
+// a v2 `ctx.session` whose child replies are scripted from the prompt text.
+// Like OpenCode 2.x, a child answers on the model it was CREATED with
+// (`create.model`), else on the session model `model(create)` (v2
+// `SessionMessageAssistant.model`) — naming an agent alone does not pick its model.
 function mockSession(reply, model) {
   const calls = { creates: [], prompts: [] };
   const created = new Map();
@@ -33,7 +34,8 @@ function mockSession(reply, model) {
     prompt: async (req) => { calls.prompts.push(req); pending.set(req.sessionID, reply(req.text)); return { id: 'inb' }; },
     wait: async () => {},
     context: async ({ sessionID }) => {
-      const m = model?.(created.get(sessionID));
+      const req = created.get(sessionID);
+      const m = req?.model ?? model?.(req);
       return [{ type: 'assistant', agent: 'x', ...(m ? { model: m } : {}), content: [{ type: 'text', text: pending.get(sessionID) }] }];
     },
   };
@@ -124,10 +126,12 @@ test('execute: a bounded/incomplete run with zero findings is NO-SHIP (INCOMPLET
 
 // ---- per-lens models ----
 // `ctx.agent` as v2 exposes it: list() → AgentListOutput { location, data: AgentInfo[] }.
+// Each listed agent configures its own model, `vercel/vmc/adlc-<id>`.
 const agentDomain = (ids = ALL_AGENTS) => ({
-  list: async () => ({ location: { directory: '/p' }, data: ids.map((id) => ({ id, name: id, mode: 'subagent', hidden: false, permissions: [] })) }),
+  list: async () => ({ location: { directory: '/p' }, data: ids.map((id) => ({ id, name: id, mode: 'subagent', hidden: false, permissions: [], model: { providerID: 'vercel', id: `vmc/adlc-${id}` } })) }),
 });
-const lensModel = (create) => ({ providerID: 'vercel', id: `vmc/adlc-${create?.agent ?? 'session'}` });
+// The session model a child falls back to when created without one.
+const lensModel = () => ({ providerID: 'vercel', id: 'vmc/adlc-session' });
 const bugOrConfirm = (text) => (isVerifier(text) ? fenced({ real: true }) : fenced([{ title: 'bug', severity: 'high', file: 'x' }]));
 
 test('execute: every lens and the verifier run AS their agent and report the model that answered', async () => {
@@ -149,7 +153,7 @@ test('execute: every lens and the verifier run AS their agent and report the mod
 
 test('execute: reviewers that all answer on one model are labelled single-model, not cross-model', async () => {
   const session = mockSession(() => fenced([]), () => ({ providerID: 'anthropic', id: 'claude-opus-5' }));
-  const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: agentDomain(), diffImpl: () => 'diff x' });
+  const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: { list: async () => ({ data: ALL_AGENTS.map((id) => ({ id, name: id })) }) }, diffImpl: () => 'diff x' });
   const r = await def.execute({ base: 'main' }, TOOL_CTX);
   assert.equal(r.metadata.singleModel, true);
   assert.match(r.content, /fresh-context, single-model review \(not cross-model\)/);

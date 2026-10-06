@@ -124,22 +124,25 @@ function toModelRef(model) {
  *
  * Methods are called ON `session` — the client's methods may read `this`.
  *
- * Per call, `agent` creates the child AS that agent (the host then resolves the
- * agent's configured model), and `onMessages` receives the child's messages
- * before the answer is returned.
+ * Per call, `agent` creates the child AS that agent and `model` runs it on that
+ * model (overriding the factory `model`). OpenCode does NOT apply an agent's
+ * configured model to a plugin-created session, so a caller that wants the
+ * agent's model must pass it. `onMessages` receives the child's messages before
+ * the answer is returned.
  */
 export function makeSessionAsk(session, { title, permissions, directory, model, timeoutMs = PROMPT_TIMEOUT_MS, label = 'keyless' } = {}) {
   if (typeof session?.create !== 'function' || typeof session?.prompt !== 'function'
     || typeof session?.wait !== 'function' || typeof session?.context !== 'function') return null;
   const modelRef = toModelRef(model);
-  return async (text, { agent, onMessages } = {}) => {
+  return async (text, { agent, model: callModel, onMessages } = {}) => {
+    const ref = toModelRef(callModel) ?? modelRef;
     const created = await withTimeout(
       session.create({
         title,
         permissions: [...permissions],
         ...(agent ? { agent } : {}),
         ...(directory ? { location: { directory } } : {}),
-        ...(modelRef ? { model: modelRef } : {}),
+        ...(ref ? { model: ref } : {}),
       }),
       timeoutMs, `${label}: child session.create timed out`);
     const sessionID = created?.id;
