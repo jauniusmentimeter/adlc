@@ -103,6 +103,48 @@ hollow-test --test-cmd "node --test test/*.test.mjs" --json
 
 4. **Green baseline**: requires a green baseline before mutating so a failing suite cannot masquerade as killing every mutant. If the baseline suite fails, hollow-test emits the test command's captured stdout and stderr to stderr before exiting, ensuring failure reasons and failing tests are diagnosable.
 
+5. **A timeout ends everything the suite started**: each trial runs through a
+   small watchdog child (`lib/watchdog.mjs`) that keeps the suite in your own
+   process group and session and, when the timeout fires, freezes the victims (SIGSTOP, root outward, re-collected
+   until stable, so a fork during the kill cannot slip out by being reparented)
+   and then SIGKILLs them. Victims are the shell's live descendants plus, on
+   Linux, every process whose environment still carries the marker the shell
+   was started with (a chain, so a nested hollow-test extends it rather than
+   hiding its subtree from the outer sweep), which catches a helper the suite
+   double-forked or detached earlier in the trial. Anything ended beyond the
+   shell itself is named on hollow-test's stderr as it happens (and folded into
+   that trial's captured output), so a daemon the suite detached does not
+   vanish silently. Parent links come from `/proc` on Linux with no fork,
+   so this works on the memory-starved host it exists for; other platforms use
+   a time-boxed `ps` and the live tree only. The watchdog also polls its parent:
+   if hollow-test itself is killed outright (`kill -9`, a caller's timeout), it
+   ends the suite and exits rather than being stranded with it. The same sweep
+   runs on Ctrl-C (a shell starts `&` jobs with SIGINT ignored, so a helper
+   started as `server & npm test` would otherwise survive it) and whenever the
+   shell exits on its own, so a crashed `node --test` cannot strand a worker
+   any more than a timeout can (on that path the shell is already reaped, so
+   only the marker sweep can still name what it left, on Linux). What still
+   escapes: a process that scrubs its own environment after detaching, and a
+   detached helper on a platform without readable `/proc`. Before all this,
+   `node --test`, its file workers and anything the suite spawned outlived
+   every timed-out mutant as orphans, still running the mutant code; a pile of
+   them took a host down (2026-10-08: RAM and swap full, nothing killed, SSH
+   logins that never got a shell). Windows runs the command unwrapped.
+
+6. **Every node gets a V8 heap cap**: each node the test command starts gets
+   `--max-old-space-size` via `NODE_OPTIONS` (default 2048 MiB, inherited by the
+   suite's own child processes), so a mutant that makes JS-heap growth unbounded
+   dies with "heap out of memory" instead of running until the timeout. This is a
+   per-process bound on one isolate's old space, not a host bound: `node --test`
+   runs files in parallel, and Buffer, ArrayBuffer and native memory are outside
+   it (the 2026-10-08 runaway was an endless stream of Buffers). Bound the host
+   with a cgroup (`systemd-run --scope -p MemoryMax=…`); rely on guarantee 5 to
+   end a runaway. `HOLLOW_TEST_MAX_OLD_SPACE_MB=<n>` changes the cap; `0` disables
+   it; when the variable is unset, a `--max-old-space-size` (or `--max_old_space_size`) you already put in `NODE_OPTIONS` is kept; when it is set, it replaces any inherited flag. The baseline run uses the same settings, so a suite that genuinely needs
+   more fails loudly there, not silently mid-gate, and the stderr it prints names
+   the cap and the variable. The default is below Node's own default on large
+   hosts; a suite that needs more sets the variable once.
+
 ## What is mutated (and what is skipped)
 
 Mutation applies to plain JavaScript only: `.mjs`, `.cjs`, `.js`. This is an

@@ -11,7 +11,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+- **hollow-test:** a trial now ends everything it started — on timeout, on Ctrl-C, when hollow-test itself is killed, and when the suite crashes on its own. Trials run through a watchdog child that keeps the suite in the caller's process group and, on each of those, freezes then SIGKILLs the suite's whole descendant tree plus any earlier-detached helper still carrying its environment marker (a chain, so a nested hollow-test does not hide its subtree; parent links from /proc, no fork), and reports what it ended. Timed-out mutants used to leave `node --test` and its workers running as orphans, still executing the mutant; on 2026-10-08 the pile of them filled a host's RAM and swap with nothing ever killed, and the box had to be power-cycled twice.
+- **mutation-gate (scripts):** the baseline measurement launches through the same watchdog, so a timed-out measurement no longer strands `node --test` either, and a real timeout (which spawnSync reports as `ETIMEDOUT` plus `SIGTERM`) is classified as a timeout rather than a launch failure.
+
 ### Breaking
+- **hollow-test:** every node the test command starts now gets a per-process V8 heap cap, `--max-old-space-size=2048` via NODE_OPTIONS, so a mutant that makes JS-heap growth unbounded dies with "heap out of memory" instead of running for the whole timeout. Breaking for a suite whose baseline legitimately needs more than 2 GiB in one isolate: it goes red at the baseline on upgrade, with the cap and the knob named in the stderr it prints: `HOLLOW_TEST_MAX_OLD_SPACE_MB=<n>` raises it, `0` disables it, and when it is unset an existing `--max-old-space-size` (either spelling) in NODE_OPTIONS is kept. Off-heap Buffers and parallel workers are outside this bound; bound the host with a cgroup.
 - **tickets:** `@adlc/tickets` no longer exports the `./lib/generation-descriptor.mjs` subpath (it was published in 1.11.1). An `import '@adlc/tickets/lib/generation-descriptor.mjs'` now fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`; the remaining subpaths are `./lib/key-contract.mjs`, `./lib/durability.mjs` and `./lib/manifest-primitives.mjs`.
 - **parallax:** `parallax --prompt-only --record-verdict <file|->` now requires `--ticket <id>` and exits 1 without it, so a recorded verdict is always bound to the ticket it is evidence for.
 

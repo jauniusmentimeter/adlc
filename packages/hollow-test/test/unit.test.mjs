@@ -2,9 +2,12 @@
 // Unit tests for lib/targets.mjs and lib/report.mjs (pure functions, no I/O).
 
 import { describe, it } from 'node:test';
+import { spawn, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { readdirSync } from 'node:fs';
 import { tmp } from '@adlc/core/test-kit';
 
 import {
@@ -12,7 +15,7 @@ import {
   readRailsFromTicketFile, expandRailsToFiles,
 } from '../lib/targets.mjs';
 import { buildJsonReport, printTable } from '../lib/report.mjs';
-import { checkSyntax, classifyTestResult, runTest } from '../lib/runner.mjs';
+import { checkSyntax, classifyTestResult, runTest, heapCapMb, withHeapCap, withHeapCapHint, launchFor, GROUP_KILL } from '../lib/runner.mjs';
 
 // ── filterTargetFiles ────────────────────────────────────────────────────────
 
@@ -467,5 +470,309 @@ describe('classifyTestResult', () => {
     const c = classifyTestResult({ status: null, signal: null });
     assert.equal(c.spawnFailed, true);
     assert.equal(c.timedOut, false);
+  });
+});
+
+// ── runTest: a timeout ends everything the suite started ────────────────────
+//
+// spawnSync's timeout only signals its direct child. Before this, that was the
+// shell: `node --test` and its workers outlived every timed-out mutant as
+// orphans, still running the mutant code; on 2026-10-08 the pile of them froze
+// the host. A kill must mean the run is OVER — nothing it started may keep
+// running — and it must not cost the operator Ctrl-C to get there.
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// procps is a test-only need (the watchdog reads /proc on Linux); skip, do not crash, without it.
+const hasTool = (name) => spawnSync('sh', ['-c', `command -v ${name}`], { stdio: 'ignore' }).status === 0;
+// Report files the runner mints for a given caller pid, left in tmpdir.
+const reportsFor = (pid) => readdirSync(tmpdir()).filter((f) => f.startsWith(`hollow-test-watchdog-${pid}-`));
+
+describe('runTest ends everything the suite started on timeout', { skip: !GROUP_KILL }, () => {
+  it('a worker the suite spawned does not outlive the timed-out run', async (t) => {
+    const dir = tmp(t, 'hollow-pgroup-');
+    const pidFile = join(dir, 'worker.pid');
+    // The shape of `node --test`: start a long-lived worker, record it, wait on it.
+    const r = runTest(`sleep 30 & echo $! > "${pidFile}"; wait`, 3000, dir);
+    assert.equal(r.timedOut, true, 'the run must be reported as a timeout');
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    assert.ok(pid > 0, 'the worker recorded its pid');
+    for (let i = 0; i < 40 && alive(pid); i++) await settle(50);
+    assert.equal(alive(pid), false, `worker ${pid} outlived the timed-out run`);
+  });
+
+  it('a run that finishes carries its own exit status and output through the wrapper', () => {
+    const r = runTest('echo out; echo err >&2; exit 3', 20000, process.cwd());
+    assert.equal(r.status, 3);
+    assert.equal(r.stdout, 'out\n');
+    assert.equal(r.stderr, 'err\n');
+    assert.equal(r.timedOut, false);
+    assert.equal(r.spawnFailed, false);
+  });
+
+  it('a chained command keeps && semantics inside the wrapper', () => {
+    const r = runTest('true && exit 2', 20000, process.cwd());
+    assert.equal(r.status, 2);
+  });
+
+  // The review of the first cut caught this: `detached: true` would have put the
+  // suite in its own session, so Ctrl-C no longer reached it and a kill -9 of
+  // hollow-test stranded the suite — the orphan class reopened on the interrupt
+  // path. The suite must stay in the caller's process group and session.
+  it('the suite runs in the caller\'s own process group and session (no setsid)', { skip: !hasTool('ps') && 'needs ps' }, () => {
+    const mine = runTest(`ps -o pgid=,sid= -p ${process.pid}`, 20000, process.cwd()).stdout.trim().split(/\s+/);
+    const r = runTest('ps -o pgid=,sid= -p $$', 20000, process.cwd());
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.stdout.trim().split(/\s+/), mine, 'suite pgid/sid must equal the caller\'s');
+  });
+
+  // A suite that keeps forking is the case a snapshot-and-kill misses: a child
+  // forked after the snapshot, reparented to init once the shell dies. The
+  // watchdog freezes the tree before killing it, so none can slip out.
+  it('a suite that forks continuously leaves nothing behind either', { skip: !hasTool('pgrep') && 'needs pgrep' }, async (t) => {
+    const dir = tmp(t, 'hollow-fork-');
+    // A private name for `sleep`, so survivors are found (and killed) by a path
+    // no other run on the host can share.
+    const link = join(dir, `forked-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    symlinkSync(spawnSync('sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).stdout.trim(), link);
+    const r = runTest(`while :; do "${link}" 30 & sleep 0.02; done`, 3000, dir);
+    assert.equal(r.timedOut, true);
+    const survivors = () => {
+      const out = spawnSync('pgrep', ['-f', `^${link} 30$`], { encoding: 'utf8' }).stdout.trim();
+      return out ? out.split('\n').map(Number) : [];
+    };
+    let left = survivors();
+    for (let i = 0; i < 40 && left.length; i++) { await settle(50); left = survivors(); }
+    for (const pid of left) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    assert.deepEqual(left, [], `${left.length} forked worker(s) outlived the timed-out run`);
+  });
+
+  // A helper the suite double-forked earlier in the trial was reparented to init
+  // long before the timeout: not a descendant any more, but it inherited the
+  // watchdog's environment marker, and the sweep finds it by that.
+  it('a helper double-forked before the timeout (already reparented) is found and killed too', { skip: process.platform !== 'linux' }, async (t) => {
+    const dir = tmp(t, 'hollow-reparent-');
+    const pidFile = join(dir, 'helper.pid');
+    const r = runTest(`(sleep 30 & echo $! > "${pidFile}"); sleep 10`, 3000, dir);
+    assert.equal(r.timedOut, true);
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    for (let i = 0; i < 40 && alive(pid); i++) await settle(50);
+    assert.equal(alive(pid), false, `reparented helper ${pid} outlived the timed-out run`);
+  });
+
+  // hollow-test is blocked in spawnSync and cannot forward its own death. If it
+  // is killed outright (kill -9, its caller's timeout), the watchdog must notice
+  // its parent is gone and end the suite itself — otherwise this is the incident
+  // class on a different trigger, with nobody left to kill the runaway.
+  it('when the caller of runTest is killed outright, the suite dies with it', async (t) => {
+    const dir = tmp(t, 'hollow-parent-death-');
+    const pidFile = join(dir, 'worker.pid');
+    const runnerUrl = new URL('../lib/runner.mjs', import.meta.url).href;
+    // A stand-in hollow-test: blocks in runTest for 60 s unless killed.
+    const standIn = spawn(process.execPath, ['--input-type=module', '-e',
+      `import { runTest } from ${JSON.stringify(runnerUrl)}; runTest(${JSON.stringify(`sleep 30 & echo $! > "${pidFile}"; wait`)}, 60000, ${JSON.stringify(dir)});`,
+    ], { stdio: 'ignore' });
+    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await settle(50);
+    assert.ok(existsSync(pidFile), 'the suite started');
+    const worker = Number(readFileSync(pidFile, 'utf8').trim());
+    assert.equal(alive(worker), true);
+    standIn.kill('SIGKILL');
+    for (let i = 0; i < 80 && alive(worker); i++) await settle(50);
+    assert.equal(alive(worker), false, `worker ${worker} outlived the killed caller`);
+    for (let i = 0; i < 20 && reportsFor(standIn.pid).length; i++) await settle(50);
+    assert.deepEqual(reportsFor(standIn.pid), [], 'no report file is left behind for a caller that cannot read it');
+  });
+
+  // The crash path must end what the timeout path ends: a heap-capped node dies
+  // by SIGABRT with its workers still running, and the trial is scored a kill.
+  it('when the suite crashes on its own, what it left running is swept too', { skip: process.platform !== 'linux' }, async (t) => {
+    const dir = tmp(t, 'hollow-crash-');
+    const pidFile = join(dir, 'worker.pid');
+    const r = runTest(`sleep 30 & echo $! > "${pidFile}"; node -e "setTimeout(() => process.abort(), 200)"`, 20000, dir);
+    assert.equal(r.timedOut, false);
+    assert.equal(r.status, 134, 'the abort is the trial\'s own exit status');
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    for (let i = 0; i < 40 && alive(pid); i++) await settle(50);
+    assert.equal(alive(pid), false, `worker ${pid} outlived the crashed suite`);
+  });
+
+  // A POSIX shell starts `&` jobs with SIGINT ignored, so Ctrl-C alone would
+  // leave `server & npm test`'s server behind. The watchdog sweeps on SIGINT.
+  it('Ctrl-C (SIGINT to the foreground group) ends backgrounded helpers as well', async (t) => {
+    const dir = tmp(t, 'hollow-sigint-');
+    const pidFile = join(dir, 'worker.pid');
+    const runnerUrl = new URL('../lib/runner.mjs', import.meta.url).href;
+    // A stand-in hollow-test in its own group, so SIGINT can be sent to that group alone.
+    const standIn = spawn(process.execPath, ['--input-type=module', '-e',
+      `import { runTest } from ${JSON.stringify(runnerUrl)}; runTest(${JSON.stringify(`sleep 30 & echo $! > "${pidFile}"; wait`)}, 60000, ${JSON.stringify(dir)});`,
+    ], { stdio: 'ignore', detached: true });
+    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await settle(50);
+    assert.ok(existsSync(pidFile), 'the suite started');
+    const worker = Number(readFileSync(pidFile, 'utf8').trim());
+    process.kill(-standIn.pid, 'SIGINT');
+    for (let i = 0; i < 80 && alive(worker); i++) await settle(50);
+    try { process.kill(-standIn.pid, 'SIGKILL'); } catch {}
+    assert.equal(alive(worker), false, `backgrounded worker ${worker} survived Ctrl-C`);
+    for (let i = 0; i < 20 && reportsFor(standIn.pid).length; i++) await settle(50);
+    assert.deepEqual(reportsFor(standIn.pid), [], 'no report file is left behind for a caller taken by the same Ctrl-C');
+  });
+
+  // This repo gates its own suite: a hollow-test inside a hollow-test. The inner
+  // watchdog must extend the marker chain, not replace it, or a helper the inner
+  // trial detached is invisible to the OUTER sweep when the outer trial times out.
+  it('nested: a helper detached by an inner trial is still found by the outer sweep', { skip: process.platform !== 'linux' }, async (t) => {
+    const dir = tmp(t, 'hollow-nested-');
+    const pidFile = join(dir, 'helper.pid');
+    const inner = `(sleep 30 & echo $! > "${pidFile}"); sleep 10`;
+    // The inner watchdog, launched exactly as the runner launches one, as a shell
+    // string for the outer trial. Single quotes: the OUTER shell must hand `$!`
+    // and the source to the inner one untouched.
+    const sq = (a) => `'${a.replace(/'/g, "'\\''")}'`;
+    const [cmd, args] = launchFor(inner);
+    const r = runTest([cmd, ...args].map(sq).join(' '), 5000, dir);
+    assert.equal(r.timedOut, true);
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    for (let i = 0; i < 40 && alive(pid); i++) await settle(50);
+    assert.equal(alive(pid), false, `helper ${pid} detached one level down outlived the outer timeout`);
+  });
+
+  it('the sweep says what it ended beyond the shell', async (t) => {
+    const dir = tmp(t, 'hollow-said-');
+    const r = runTest('sleep 30 & wait', 3000, dir);
+    assert.equal(r.timedOut, true);
+    assert.match(r.stderr, /watchdog: ended 1 process\(es\) the suite left running: \d+/);
+    const quiet = runTest('true', 20000, dir);
+    assert.equal(quiet.stderr, '', 'nothing to say when nothing was left running');
+  });
+
+  // Run by hand (no report file named), the watchdog says it on its stderr —
+  // and on fd 2, not some other descriptor.
+  it('without a report file, the watchdog reports on its own stderr', () => {
+    const [cmd, args] = launchFor('sleep 30 & exit 0');
+    const env = { ...process.env };
+    delete env.HOLLOW_TEST_WATCHDOG_REPORT;
+    const r = spawnSync(cmd, args, { encoding: 'utf8', env, timeout: 20000 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /watchdog: ended 1 process\(es\) the suite left running: \d+/);
+    assert.equal(r.stdout, '', 'nothing of it on stdout');
+  });
+
+  it('a trial is launched through the watchdog SOURCE loaded with the runner, not a path re-read per trial', () => {
+    const [command, args] = launchFor('true');
+    assert.equal(command, process.execPath);
+    assert.deepEqual(args.slice(0, 2), ['--input-type=module', '-e']);
+    assert.match(args[2], /HOLLOW_TEST_WATCHDOG/, 'the watchdog source itself is the argument');
+    assert.ok(!args.some((a) => /watchdog\.mjs$/.test(a)), 'no on-disk path: a mutant written there mid-run must not become the harness');
+    assert.deepEqual(args.slice(-2), ['--', 'true']);
+  });
+});
+
+// ── runTest: every run has a heap cap ───────────────────────────────────────
+
+describe('runTest caps the heap of every node it starts', () => {
+  const heapLimit = `node -e "console.log(require('v8').getHeapStatistics().heap_size_limit)"`;
+  const withEnv = (value, fn) => {
+    const had = Object.hasOwn(process.env, 'HOLLOW_TEST_MAX_OLD_SPACE_MB');
+    const prev = process.env.HOLLOW_TEST_MAX_OLD_SPACE_MB;
+    if (value === undefined) delete process.env.HOLLOW_TEST_MAX_OLD_SPACE_MB; else process.env.HOLLOW_TEST_MAX_OLD_SPACE_MB = value;
+    try { return fn(); } finally {
+      if (had) process.env.HOLLOW_TEST_MAX_OLD_SPACE_MB = prev; else delete process.env.HOLLOW_TEST_MAX_OLD_SPACE_MB;
+    }
+  };
+
+  it('HOLLOW_TEST_MAX_OLD_SPACE_MB bounds the child heap (inherited via NODE_OPTIONS)', () => {
+    const r = withEnv('256', () => runTest(heapLimit, 20000, process.cwd()));
+    assert.equal(r.status, 0, r.stderr);
+    const limit = Number(r.stdout.trim());
+    // V8 reports old space plus young generation and overhead: 256 MiB lands near 450 MiB.
+    assert.ok(limit > 0 && limit < 600 * 1024 * 1024, `heap limit ${limit} is not capped near 256 MiB`);
+  });
+
+  it('HOLLOW_TEST_MAX_OLD_SPACE_MB=0 runs uncapped', () => {
+    const r = withEnv('0', () => runTest(heapLimit, 20000, process.cwd()));
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(Number(r.stdout.trim()) > 512 * 1024 * 1024, 'the cap must be off');
+  });
+
+  // Literal 2048 on purpose: comparing against the exported constant would pass
+  // for ANY value of it, including undefined (a mutant the gate produced).
+  it('heapCapMb: 2048 when unset, 0 disables, garbage falls back to 2048', () => {
+    assert.equal(heapCapMb({}), 2048);
+    assert.equal(heapCapMb({ HOLLOW_TEST_MAX_OLD_SPACE_MB: '' }), 2048);
+    assert.equal(heapCapMb({ HOLLOW_TEST_MAX_OLD_SPACE_MB: '0' }), 0);
+    assert.equal(heapCapMb({ HOLLOW_TEST_MAX_OLD_SPACE_MB: '512' }), 512);
+    assert.equal(heapCapMb({ HOLLOW_TEST_MAX_OLD_SPACE_MB: 'lots' }), 2048);
+    assert.equal(heapCapMb({ HOLLOW_TEST_MAX_OLD_SPACE_MB: '-5' }), 2048);
+  });
+
+  it('withHeapCap: appends the cap to NODE_OPTIONS, keeps what was there, drops NODE_TEST_CONTEXT', () => {
+    assert.equal(withHeapCap({}).NODE_OPTIONS, '--max-old-space-size=2048');
+    assert.equal(withHeapCap({ HOLLOW_TEST_MAX_OLD_SPACE_MB: '1' }).NODE_OPTIONS, '--max-old-space-size=1', 'a 1 MiB cap is still a cap');
+    assert.equal(withHeapCap({ NODE_OPTIONS: '--no-warnings', HOLLOW_TEST_MAX_OLD_SPACE_MB: '300' }).NODE_OPTIONS, '--no-warnings --max-old-space-size=300');
+    const off = withHeapCap({ NODE_OPTIONS: '--no-warnings', HOLLOW_TEST_MAX_OLD_SPACE_MB: '0', NODE_TEST_CONTEXT: 'child-v8' });
+    assert.equal(off.NODE_OPTIONS, '--no-warnings', '0 leaves NODE_OPTIONS untouched');
+    assert.equal('NODE_TEST_CONTEXT' in off, false);
+    const env = { KEEP: 'me' };
+    withHeapCap(env);
+    assert.deepEqual(env, { KEEP: 'me' }, 'the input env is not mutated');
+  });
+
+  // hollow-test's own suite runs under an outer hollow-test (the repo's mutation
+  // gate), which injects its 2048 into NODE_OPTIONS. An explicit variable must
+  // win over that, or the test above cannot pass inside the gate — and the
+  // package that adds the cap is the package that can no longer gate itself.
+  it('a node that dies at a cap THIS runner set gets the knob named in its stderr', () => {
+    const oom = 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n';
+    const byDefault = withHeapCapHint({ status: 134, stderr: oom }, { mb: 2048, explicit: false });
+    assert.match(byDefault.stderr, /--max-old-space-size=2048, hollow-test's default/);
+    assert.match(byDefault.stderr, /Set HOLLOW_TEST_MAX_OLD_SPACE_MB higher, or 0/);
+    const explicit = withHeapCapHint({ status: 134, stderr: oom }, { mb: 256, explicit: true });
+    assert.match(explicit.stderr, /--max-old-space-size=256, from HOLLOW_TEST_MAX_OLD_SPACE_MB/);
+    assert.equal(withHeapCapHint({ status: 1, stderr: 'ordinary failure\n' }, { mb: 2048, explicit: false }).stderr, 'ordinary failure\n', 'no hint without a heap OOM');
+    assert.equal(withHeapCapHint({ status: 134, stderr: oom }, null).stderr, oom, "an operator's own flag is not blamed on the variable");
+    // End to end: a tiny cap, a loop that fills the heap, the hint in the real stderr.
+    const r = withEnv('24', () => runTest(`node -e "const a = []; for (;;) a.push(new Array(1e5).fill(1))"`, 60000, process.cwd()));
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /--max-old-space-size=24, from HOLLOW_TEST_MAX_OLD_SPACE_MB/, r.stderr.slice(-400));
+    // An operator's own flag, variable unset: the OOM is theirs, no hint.
+    const prev = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--max-old-space-size=24';
+    try {
+      const theirs = withEnv(undefined, () => runTest(`node -e "const a = []; for (;;) a.push(new Array(1e5).fill(1))"`, 60000, process.cwd()));
+      assert.notEqual(theirs.status, 0);
+      assert.doesNotMatch(theirs.stderr, /HOLLOW_TEST_MAX_OLD_SPACE_MB/);
+    } finally {
+      if (prev === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = prev;
+    }
+  });
+
+  it('withHeapCap: an explicit HOLLOW_TEST_MAX_OLD_SPACE_MB replaces an inherited flag, in either spelling', () => {
+    for (const inherited of ['--max-old-space-size=2048', '--max_old_space_size=2048', '--max-old-space-size 2048']) {
+      const o = withHeapCap({ NODE_OPTIONS: `--no-warnings ${inherited} --stack-size=900`, HOLLOW_TEST_MAX_OLD_SPACE_MB: '256' });
+      assert.equal(o.NODE_OPTIONS, '--no-warnings --stack-size=900 --max-old-space-size=256', inherited);
+    }
+    const zero = withHeapCap({ NODE_OPTIONS: '--max-old-space-size=2048', HOLLOW_TEST_MAX_OLD_SPACE_MB: '0' });
+    assert.equal(zero.NODE_OPTIONS, '--max-old-space-size=2048', 'explicit 0 leaves NODE_OPTIONS exactly as found');
+    const malformed = withHeapCap({ NODE_OPTIONS: '--max-old-space-size=8192', HOLLOW_TEST_MAX_OLD_SPACE_MB: 'lots' });
+    assert.equal(malformed.NODE_OPTIONS, '--max-old-space-size=8192', 'a malformed value does not outrank the operator\'s own flag');
+  });
+
+  it('withHeapCap: an operator\'s own --max-old-space-size in NODE_OPTIONS wins over the default', () => {
+    // V8 accepts `_` for `-` in flag names; both spellings are the operator's choice.
+    for (const theirs of ['--max-old-space-size=8192', '--no-warnings --max-old-space-size=8192', '--max-old-space-size 8192', '--max_old_space_size=8192']) {
+      assert.equal(withHeapCap({ NODE_OPTIONS: theirs }).NODE_OPTIONS, theirs, theirs);
+    }
+    const r = runTest(`node -e "console.log(require('v8').getHeapStatistics().heap_size_limit)"`, 20000, process.cwd());
+    assert.equal(r.status, 0, r.stderr);
+    const capped = Number(r.stdout.trim());
+    const prev = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--max-old-space-size=3000';
+    try {
+      const r2 = runTest(`node -e "console.log(require('v8').getHeapStatistics().heap_size_limit)"`, 20000, process.cwd());
+      assert.equal(r2.status, 0, r2.stderr);
+      assert.ok(Number(r2.stdout.trim()) > capped, 'the operator\'s larger heap must survive into the child');
+    } finally {
+      if (prev === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = prev;
+    }
   });
 });
