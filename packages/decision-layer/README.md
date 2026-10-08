@@ -21,7 +21,7 @@ adlc decision evaluate --mode shadow --provider <jev|mock> --model <id> \
 | Flag | Description | Default |
 |---|---|---|
 | `--mode` | `off` (does nothing) or `shadow`. Anything else is refused. | `off` |
-| `--provider` | `mock`, or `jev` (refused until its live contract fixture exists) | — |
+| `--provider` | `mock` (offline), or `jev` (TypeSafe's API) | — |
 | `--model` | Model identifier to request | — |
 | `--pack` | Question pack ID. Shipped: `change-risk-v1` | — |
 | `--revision` | Revision whose change is described | `HEAD` |
@@ -51,7 +51,11 @@ Only declared metadata, after sanitization:
 | `ticketCategory`, `declaredRailCount` | the `--ticket` in the ticket store, or `none` |
 
 Never source text, diff hunks, issue bodies, prompts, environment files, git
-history, file paths or credentials. Strings are normalized, credential-shaped
+history, file paths or credentials. What the provider does receive, besides
+these fields, is the pack itself: its ID and each question's ID, kind, prompt
+and domain labels, since the provider cannot answer a question it is not shown.
+For a project pack under `.adlc/decision-packs/` that is repository text, so
+write its questions as you would anything sent to a third party. Strings are normalized, credential-shaped
 values (API-key prefixes, JWTs, private-key blocks, high-entropy tokens) are
 replaced with `<redacted:…>` tokens, and fields are capped at 4 KiB each and
 32 KiB in total. Any sanitization failure stops the run before dispatch.
@@ -99,5 +103,17 @@ object with `simulate` set to `timeout`, `rate-limit` or `network` makes it fail
 that way), or a fixed reply that reduces to `unknown`. It never derives answers
 from its input.
 
-`jev` is refused until one live response from TypeSafe's API has been captured
-as the adapter's contract fixture.
+`jev` asks TypeSafe's System One API (`https://api.typesafe.ai/v1/systemone`,
+overridable with an https `TYPESAFE_API_URL`) using `TYPESAFE_API_KEY`, or
+`JEV_API_KEY` when that is unset. Its tests replay live responses captured on
+2026-10-08 (`test/fixtures/jev-live-2026-10-08.json`). One run is one call, so
+every question in the pack must declare the same inputs, and only `Choice` and
+`Noul` questions are supported (no live `Score` reply has been captured); any
+other pack is refused as a configuration error (exit 1, nothing sent or recorded). TypeSafe answers a `Noul`
+question with P(yes) = p, recorded as `yes` with probability p when p is at
+least 0.5 (a tie counts as `yes`) and otherwise as `no` with probability 1 - p.
+429, 529 and network failures are `unknown` after up to two retries; any other
+5xx, or a reply that breaks off mid-body, is `unknown` without a retry; any
+other non-2xx status (a redirect, a rejected key) is `error`, as is a reply that
+does not report the model that answered. A key with whitespace or other
+characters an HTTP header cannot carry is a configuration error.

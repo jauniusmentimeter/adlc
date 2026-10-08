@@ -33,7 +33,7 @@ adlc decision evaluate --mode shadow --provider mock --model mock-1 --pack chang
 | Flag | Description |
 | --- | --- |
 | `--mode off\|shadow` | `off` (default) does nothing. Any other value, including `enforce`, is refused. |
-| `--provider mock\|jev` | `mock` is offline. `jev` is refused until its live contract fixture has been captured. |
+| `--provider mock\|jev` | `mock` is offline. `jev` asks TypeSafe's System One API with `TYPESAFE_API_KEY` (or `JEV_API_KEY`). |
 | `--model <id>` | Model identifier to request. |
 | `--pack <id>` | Question pack. Shipped: `change-risk-v1`. |
 | `--revision <rev>` | Revision whose change is described (default `HEAD`). |
@@ -43,10 +43,12 @@ adlc decision evaluate --mode shadow --provider mock --model mock-1 --pack chang
 
 ## What leaves the machine
 
-Only declared metadata: files changed per extension, lines added and deleted,
+Declared metadata: files changed per extension, lines added and deleted,
 files changed, and the ticket's category and rail count. Never source text,
 diffs, issue bodies, prompts, environment files, git history, file paths or
-credentials. Credential-shaped strings are redacted, fields are capped at 4 KiB
+credentials. The provider also receives the pack's own question text and
+answer labels, which it needs to answer; a project pack's questions are
+repository text, so write them as you would anything sent to a third party. Credential-shaped strings are redacted, fields are capped at 4 KiB
 each and 32 KiB in total, and any sanitization failure stops the run before
 anything is sent.
 

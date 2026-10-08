@@ -9,7 +9,6 @@ import { spawnSync } from 'node:child_process';
 import { tmp } from '@adlc/core/test-kit';
 import { FETCH_EXIT_CODE, NO_NETWORK_PRELOAD, installNoNetwork } from './helpers/no-network.mjs';
 import { changeRepo, responseFile, runCli } from './helpers/fixtures.mjs';
-import { JEV_FIXTURE_PATH } from '../lib/config.mjs';
 import { SHIPPED_PACKS_DIR as PACKS_DIR } from '../lib/pack.mjs';
 import { createHash } from 'node:crypto';
 
@@ -54,11 +53,48 @@ test('jev without an API key is refused', (t) => {
   refused(t, [...SHADOW.slice(0, 4), 'jev', ...SHADOW.slice(5)], /needs TYPESAFE_API_KEY or JEV_API_KEY/);
 });
 
+for (const [value, pattern] of [
+  ['http://api.typesafe.ai/v1/systemone', /TYPESAFE_API_URL must use https/],
+  ['https://user:pass@api.typesafe.ai/v1/systemone', /TYPESAFE_API_URL may not carry credentials/],
+  ['not a url', /TYPESAFE_API_URL is not a URL/],
+]) {
+  test(`jev with TYPESAFE_API_URL ${JSON.stringify(value)} is refused`, (t) => {
+    refused(t, [...SHADOW.slice(0, 4), 'jev', ...SHADOW.slice(5)], pattern, { env: { TYPESAFE_API_KEY: 'k', TYPESAFE_API_URL: value } });
+  });
+}
+
 for (const variable of ['TYPESAFE_API_KEY', 'JEV_API_KEY']) {
-  test(`jev with ${variable} but without the live fixture is refused, naming the fixture`, (t) => {
-    const fixture = JEV_FIXTURE_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    refused(t, [...SHADOW.slice(0, 4), 'jev', ...SHADOW.slice(5)], new RegExp(`live contract fixture is captured at ${fixture}`), {
+  test(`jev with ${variable} reaches the Jev provider's fetch`, (t) => {
+    const { dir } = changeRepo(t);
+    const result = runCli(t, [...SHADOW.slice(0, 4), 'jev', '--model', 'jev-latest', '--pack', 'change-risk-v1'], {
+      cwd: dir,
       env: { [variable]: 'not-a-real-key' },
+    });
+    assert.equal(result.status, FETCH_EXIT_CODE, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+    assert.equal(existsSync(recordFile(dir)), false);
+  });
+}
+
+test('jev with a key a header cannot carry is refused as configuration', (t) => {
+  refused(t, [...SHADOW.slice(0, 4), 'jev', ...SHADOW.slice(5)], /characters a header cannot carry/, { env: { TYPESAFE_API_KEY: 'abc\r' } });
+});
+
+for (const [name, question] of [
+  ['a Score question', { id: 'severity', kind: 'Score', prompt: 'How severe?', domain: { min: 1, max: 3 }, phases: ['P0'], inputs: ['linesAdded'] }],
+  ['questions with different inputs', null],
+]) {
+  test(`jev with a project pack holding ${name} is refused before anything is sent`, (t) => {
+    const shipped = JSON.parse(readFileSync(join(PACKS_DIR, 'change-risk-v1', 'pack.json'), 'utf8'));
+    const questions = question
+      ? [question]
+      : [{ ...shipped.questions[0], inputs: ['linesAdded'] }, { ...shipped.questions[1], inputs: ['filesChanged'] }];
+    const pack = { ...shipped, id: 'jev-unsupported', questions, aggregation: { escalateIf: [], allowIf: [] } };
+    refused(t, [...SHADOW.slice(0, 4), 'jev', '--model', 'jev-latest', '--pack', 'jev-unsupported'], /--provider jev cannot ask pack jev-unsupported/, {
+      env: { TYPESAFE_API_KEY: 'k' },
+      prepare: (dir) => {
+        mkdirSync(join(dir, '.adlc', 'decision-packs', 'jev-unsupported'), { recursive: true });
+        writeFileSync(join(dir, '.adlc', 'decision-packs', 'jev-unsupported', 'pack.json'), JSON.stringify(pack));
+      },
     });
   });
 }
