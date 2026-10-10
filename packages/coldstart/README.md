@@ -26,7 +26,7 @@ coldstart --all     [options]
 | `--offline` | off | Run deterministic offline schema and input contract validation without calling an LLM or requiring API keys |
 | `--force` | off | Bypass the cache entirely and re-audit every target ticket |
 | `--max-age <days>` | `30` | Treat a cached verdict older than this as stale; `0` treats every cache entry as stale |
-| `--prompt-only` | off | Print the exact prompt(s) and exit 0 — no LLM call made |
+| `--prompt-only` | off | Print the exact prompt(s) and exit 0 — no LLM call made. For a ticket over the 64,000-char auditable cap: no prompt, nothing recorded, exit 2 (see Caching) |
 | `--record-verdict <file\|->` | — | With `--prompt-only`: read the operator's answer from `<file>` (or stdin when `-`) and record it into `.adlc/manifest.jsonl` via `gate-manifest` — see below |
 | `--json` | off | Machine-readable JSON output for orchestrators |
 
