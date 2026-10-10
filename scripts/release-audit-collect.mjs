@@ -342,12 +342,24 @@ export function routeIssues(issues, units, ticketsByIssue = new Map()) {
 
 // ─── repository probes ───────────────────────────────────────────────────────
 
-/** Run a command, returning `{ok, out}` rather than throwing. */
-export function tryRun(cmd, args, { run = execFileSync, cwd = ROOT } = {}) {
+/** Output ceiling for an ordinary probe, Node's own default: a git probe this large is a fault. */
+export const PROBE_MAX_BUFFER = 1024 * 1024;
+
+/**
+ * Run a command, returning `{ok, out}` rather than throwing. On failure `out` is
+ * never blank: it is the child's stderr, led by the cause when the child was cut
+ * off (output overflow or signal), and the error message when stderr is
+ * empty.
+ */
+export function tryRun(cmd, args, { run = execFileSync, cwd = ROOT, maxBuffer = PROBE_MAX_BUFFER } = {}) {
   try {
-    return { ok: true, out: String(run(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).trim() };
+    return { ok: true, out: String(run(cmd, args, { cwd, encoding: 'utf8', maxBuffer })).trim() };
   } catch (err) {
-    return { ok: false, out: String(err?.stderr ?? err?.message ?? err).trim() };
+    const stderr = String(err?.stderr ?? '').trim();
+    const message = String(err?.message ?? err).trim();
+    const cutOff = err?.code === 'ENOBUFS' ? message
+      : err?.signal ? `killed by ${err.signal}` : '';
+    return { ok: false, out: [cutOff, stderr].filter(Boolean).join(': ') || message };
   }
 }
 
@@ -377,6 +389,13 @@ export function churnFor(dir, since, { run = execFileSync } = {}) {
 export const ISSUE_FETCH_LIMIT = 500;
 
 /**
+ * Output ceiling for the issue fetch: ISSUE_FETCH_LIMIT issues whose bodies are all at GitHub's 65536-character
+ * cap, each character costing up to 6 bytes of JSON (\uXXXX), plus 8 MiB for
+ * titles, labels and the rest.
+ */
+export const ISSUE_FETCH_MAX_BUFFER = ISSUE_FETCH_LIMIT * 65536 * 6 + 8 * 1024 * 1024;
+
+/**
  * Open GitHub issues, or an explicit unconsultable record when `gh` cannot answer.
  *
  * A response of exactly ISSUE_FETCH_LIMIT is reported as `truncated` rather than
@@ -386,7 +405,7 @@ export const ISSUE_FETCH_LIMIT = 500;
  */
 export function fetchIssues({ run = execFileSync, skip = false } = {}) {
   if (skip) return { issues: [], unconsultable: 'skipped via --skip-issues', truncated: null };
-  const r = tryRun('gh', ['issue', 'list', '--state', 'open', '--limit', String(ISSUE_FETCH_LIMIT), '--json', 'number,title,body,labels,url,milestone'], { run });
+  const r = tryRun('gh', ['issue', 'list', '--state', 'open', '--limit', String(ISSUE_FETCH_LIMIT), '--json', 'number,title,body,labels,url,milestone'], { run, maxBuffer: ISSUE_FETCH_MAX_BUFFER });
   if (!r.ok) return { issues: [], unconsultable: `gh issue list failed: ${r.out.slice(0, 400)}`, truncated: null };
   try {
     const parsed = JSON.parse(r.out);
