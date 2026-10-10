@@ -4,9 +4,31 @@
 import { complete as coreComplete, extractJson as coreExtractJson, detectProvider, resolveModel } from '@adlc/core';
 import { ticketHash } from '@adlc/tickets';
 import { loadFiltered } from '@adlc/gate-manifest/lib/show.mjs';
-import { buildPrompt, SYSTEM_PROMPT, ticketToText } from './prompt.mjs';
+import { buildPrompt, SYSTEM_PROMPT, TICKET_TEXT_MAX_CHARS, ticketToText } from './prompt.mjs';
 import { findCachedVerdict } from './cache.mjs';
 import { normalizeGaps, UNREADABLE_VERDICT_PREFIX } from './normalize-gaps.mjs';
+
+/**
+ * The gap a ticket has when the auditor cannot see it whole. The fence hands
+ * the model at most TICKET_TEXT_MAX_CHARS of the serialization; a verdict on a
+ * longer ticket would be a verdict on a prefix — its later acceptance criteria
+ * never read — bound to the FULL ticket's hash. No model call can make that
+ * sound, so none is made: the overflow is the gap, and the operator splits the
+ * ticket.
+ *
+ * @param {object} ticket
+ * @returns {{what:string, why_blocking:string}|null} null when the ticket fits
+ */
+export function oversizeGap(ticket) {
+  const chars = ticketToText(ticket).length;
+  if (chars <= TICKET_TEXT_MAX_CHARS) return null;
+  return {
+    what: 'ticket exceeds the auditable size',
+    why_blocking:
+      `the serialized ticket is ${chars} chars but the auditor sees at most ${TICKET_TEXT_MAX_CHARS}; ` +
+      'content past the cut cannot be audited — split the ticket',
+  };
+}
 
 /**
  * Build a checkTicket function bound to specific complete/extractJson
@@ -17,6 +39,8 @@ import { normalizeGaps, UNREADABLE_VERDICT_PREFIX } from './normalize-gaps.mjs';
  */
 export function buildCheckTicket(completeFn, extractJsonFn, tier = 'cheap') {
   return async function checkTicketWith(ticket) {
+    const oversize = oversizeGap(ticket);
+    if (oversize) return { id: ticket.id, gaps: [oversize], usage: null };
     const prompt = buildPrompt(ticket);
     let usage = null;
     const raw = await completeFn({

@@ -91,6 +91,12 @@ ticket was an audit of a prefix and is not reused; entries recorded before
 reports `"cached": true` in `--json` output and `(cached)` in the
 human-readable report.
 
+A ticket whose serialization is itself over the cap is not sent to the model
+at all: the gate reports the overflow as its one gap (`ticket exceeds the
+auditable size`, naming the size and the cap) and exits `2`, because a verdict
+on the first 64,000 characters would be bound to the hash of a ticket whose
+later acceptance criteria were never read. Split the ticket.
+
 ```sh
 # First run audits for real and records the verdict
 coldstart --all
