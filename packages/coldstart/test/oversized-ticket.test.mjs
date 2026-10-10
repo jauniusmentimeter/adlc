@@ -15,10 +15,10 @@ import { TICKET_TEXT_MAX_CHARS, ticketToText } from '../lib/prompt.mjs';
 import { ticketHash } from '@adlc/tickets';
 
 /** A ticket whose serialization is exactly `chars` long (ticketToText adds JSON framing). */
-function ticketOfExactly(chars, id = 'T-SIZE') {
+function ticketOfExactly(chars, id = 'T-SIZE', extra = {}) {
   // An empty body is omitted from the serialization, so measure the framing
-  // with a one-char body and subtract that char.
-  const base = { id, title: 'Sized' };
+  // with a one-char body and subtract that char. `extra` fields count too.
+  const base = { id, title: 'Sized', ...extra };
   const framing = ticketToText({ ...base, body: 'x' }).length - 1;
   const t = { ...base, body: 'x'.repeat(chars - framing) };
   assert.equal(ticketToText(t).length, chars, 'fixture must serialize to exactly the requested length');
@@ -109,4 +109,16 @@ test('the ADLC_GATE_MOCK_RESPONSE test seam cannot pass an over-cap ticket', asy
   const results = await checkAll([big], 'cheap');
   assert.equal(results[0].gaps.length, 1, 'the mocked clean verdict must not be served for a ticket the auditor could not see whole');
   assert.equal(results[0].oversize, true);
+});
+
+// --offline is the deterministic input-contract check; "the auditor cannot see
+// this ticket whole" is an input-contract failure, so offline reports it too.
+test('checkTicketOffline reports an over-cap ticket as a gap, alongside its other checks', async () => {
+  const { checkTicketOffline } = await import('../lib/gate.mjs');
+  const big = ticketOfExactly(TICKET_TEXT_MAX_CHARS + 1, 'T-HUGE', { scope: ['src/**'] });
+  const result = checkTicketOffline(big, [big]);
+  assert.equal(result.offline, true);
+  assert.deepEqual(result.gaps, [oversizeGap(big)], 'an otherwise valid over-cap ticket has exactly the overflow gap');
+  const fits = ticketOfExactly(TICKET_TEXT_MAX_CHARS, 'T-FITS', { scope: ['src/**'] });
+  assert.deepEqual(checkTicketOffline(fits, [fits]).gaps, [], 'exactly at the cap is not over');
 });

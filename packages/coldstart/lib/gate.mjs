@@ -259,6 +259,11 @@ export function checkTicketOffline(ticket, allTickets = []) {
     };
   }
 
+  // Part of the input contract: a ticket the auditor cannot see whole is not
+  // auditable, offline or on. Same gap as the live path, so the two agree.
+  const oversize = oversizeGap(ticket);
+  if (oversize) gaps.push(oversize);
+
   if (!ticket.body || typeof ticket.body !== 'string' || !ticket.body.trim()) {
     gaps.push({
       what: 'missing body',

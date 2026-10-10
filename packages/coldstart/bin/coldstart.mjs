@@ -143,8 +143,13 @@ if (offlineMode) {
 
 // ── Verify provider is available for real runs ───────────────────────────────
 
-const provider = detectProvider();
-if (!provider) {
+// An over-cap ticket's verdict needs no model (checkAll decides it without
+// one), so when every target is over cap the missing-key error would only
+// hide the real instruction: split the ticket. Any in-cap target still needs
+// a provider.
+const everyTargetOversize = targets.every((t) => oversizeGap(t));
+const provider = everyTargetOversize ? null : detectProvider();
+if (!provider && !everyTargetOversize) {
   opError(
     'no LLM provider configured — set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY\n' +
     '(or use --offline / --prompt-only to run without calling an LLM)'

@@ -98,7 +98,8 @@ on the first 64,000 characters would be bound to the hash of a ticket whose
 later acceptance criteria were never read. Nothing is recorded for it, and
 `--prompt-only` (with or without `--record-verdict`) emits no prompt for a run
 that includes one, so an operator's answer cannot be stored against a ticket
-they never saw whole. Split the ticket.
+they never saw whole. `--offline` reports the same gap, and the live path
+reports it without needing a provider configured. Split the ticket.
 
 ```sh
 # First run audits for real and records the verdict

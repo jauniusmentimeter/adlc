@@ -70,3 +70,41 @@ test('--prompt-only on a ticket that fits is unchanged: exit 0 and the prompt is
   assert.equal(res.status, 0, `stderr: ${res.stderr}`);
   assert.match(res.stdout, /=== user \(T-SMALL\)/);
 });
+
+test('--offline on an over-cap ticket: exit 2 with the overflow gap in the report', () => {
+  const dir = storeWith([{ ...BIG, scope: ['src/**'] }]);
+  const res = spawnSync(process.execPath, [CLI, 'T-BIG', '--offline', '--json'], { cwd: dir, encoding: 'utf8' });
+  assert.equal(res.status, 2, `stderr: ${res.stderr}`);
+  const out = JSON.parse(res.stdout);
+  const gaps = JSON.stringify(out);
+  assert.match(gaps, /exceeds the auditable size/);
+});
+
+// Without any provider the real path used to exit 1 ("configure an API key")
+// before the size decision was reached. Splitting the ticket is the fix, not a
+// key, so the overflow verdict must not depend on having one.
+test('the real path with NO provider configured still exits 2 with the overflow gap for an over-cap ticket', () => {
+  const dir = storeWith([BIG]);
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) {
+    if (/^(ANTHROPIC|OPENAI|GEMINI|ADLC)_/.test(k)) delete env[k];
+  }
+  env.NODE_ENV = 'production';
+  const res = spawnSync(process.execPath, [CLI, 'T-BIG', '--json'], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(res.status, 2, `stdout: ${res.stdout}\nstderr: ${res.stderr}`);
+  assert.doesNotMatch(res.stderr, /no LLM provider configured/);
+  assert.match(res.stdout, /exceeds the auditable size/);
+  assert.equal(existsSync(join(dir, '.adlc', 'manifest.jsonl')), false, 'a refusal to audit records nothing');
+});
+
+test('the real path with NO provider and a ticket that fits still asks for a provider (exit 1), unchanged', () => {
+  const dir = storeWith([SMALL]);
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) {
+    if (/^(ANTHROPIC|OPENAI|GEMINI|ADLC)_/.test(k)) delete env[k];
+  }
+  env.NODE_ENV = 'production';
+  const res = spawnSync(process.execPath, [CLI, 'T-SMALL'], { cwd: dir, encoding: 'utf8', env });
+  assert.equal(res.status, 1, `stderr: ${res.stderr}`);
+  assert.match(res.stderr, /no LLM provider configured/);
+});
