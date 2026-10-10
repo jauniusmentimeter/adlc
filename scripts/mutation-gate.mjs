@@ -214,6 +214,30 @@ export function testTargetFor(file, root = ROOT) {
 // --source-glob, so the wrapper and the tool agree.
 export const SOURCE_GLOBS = ['**/hollow-test.mjs', '**/spec-lint.mjs'];
 
+/**
+ * Generated files that scripts/release.mjs rewrites on every lockstep bump. A
+ * release changes only their version stamps, which no mutant can exercise, so
+ * hollow-test reports them as not covered instead of refusing the release. Only
+ * the files listed here qualify; adding one is a change to this gate.
+ */
+export const GENERATED_VERSION_FILES = [
+  'plugins/adlc-cursor/bin/adlc-mcp-wrapper.bundle.mjs',
+  'plugins/adlc-cursor/lib/mcp-build-metadata.mjs',
+];
+
+/**
+ * The wrapper's file declarations, mirrored into hollow-test so the two cannot
+ * disagree: the ambiguous product names (SOURCE_GLOBS) and the generated files
+ * a release rewrites (GENERATED_VERSION_FILES).
+ * @returns {string[]}
+ */
+export function declarationArgs() {
+  return [
+    ...SOURCE_GLOBS.flatMap((g) => ['--source-glob', g]),
+    ...GENERATED_VERSION_FILES.flatMap((f) => ['--generated', f]),
+  ];
+}
+
 export function hollowTestWouldMutate(file) {
   return isMutableSource(file, { sourceGlobs: SOURCE_GLOBS });
 }
@@ -494,9 +518,7 @@ export function main() {
     // the cap was printed above; the run is bounded either way.
     '--max', String(budget.draw),
     '--timeout-ms', String(decision.kind === 'fast' ? FAST_RUN_TIMEOUT_MS : SLOW_RUN_TIMEOUT_MS),
-    // Mirror the wrapper's own source declaration into the tool, so the two
-    // cannot disagree about the ambiguous product names (see SOURCE_GLOBS).
-    ...SOURCE_GLOBS.flatMap((g) => ['--source-glob', g]),
+    ...declarationArgs(),
   ], { stdio: 'inherit', cwd: ROOT, timeout: HOLLOW_WINDOW_MS + 60_000 });
 
   if (result.error) fail(`could not run hollow-test: ${result.error.message}`);

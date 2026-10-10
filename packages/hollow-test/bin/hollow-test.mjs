@@ -10,7 +10,7 @@ import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { parseArgs, pass, gateFail, opError, printJson } from '@adlc/core';
 import { gitDiff, isDirty, isGitRepo, resolveBase, mutate, git, repoRoot } from '@adlc/core';
 import {
-  filterTargetFiles, buildFileTargets, readFileSafe, fileChangeIsCommentOnly,
+  filterTargetFiles, buildFileTargets, readFileSafe, fileChangeIsCommentOnly, fileChangeIsVersionOnly,
   readRailsFromTicketFile, expandRailsToFiles, isMutableSource, isSupportedSourceExtension,
 } from '../lib/targets.mjs';
 import { runMutant, runTest, formatDiagnosticOutput } from '../lib/runner.mjs';
@@ -42,6 +42,9 @@ const { values } = parseArgs({
     //   --test-glob '**/*-test.js'
     'test-glob':  { type: 'string', multiple: true },
     'source-glob':{ type: 'string', multiple: true },
+    // Repo-relative paths of generated files a release bump rewrites. Only these
+    // can be reported as version-only; see fileChangeIsVersionOnly.
+    generated:    { type: 'string', multiple: true },
     json:         { type: 'boolean', default: false },
     help:         { type: 'boolean', default: false },
   },
@@ -86,6 +89,7 @@ const testGlobs = values['test-glob'] ?? [];
 // Rescues production files whose names match a test convention — `hollow-test.mjs`,
 // `spec-lint.mjs`. Convention alone cannot resolve that ambiguity; the project must.
 const sourceGlobs = values['source-glob'] ?? [];
+const generatedFiles = new Set(values.generated ?? []);
 const maxMutants = parseInt(values.max, 10);
 const timeoutMs  = parseInt(values['timeout-ms'], 10);
 const useJson    = values.json;
@@ -344,13 +348,44 @@ const commentOnlyFiles = diffEligibleFilesAll.filter((f) => {
   });
 });
 const commentOnly = new Set(commentOnlyFiles);
-const diffEligibleFiles = diffEligibleFilesAll.filter((f) => !commentOnly.has(f));
+
+// A generated file whose only change is the release bump (every changed quoted
+// literal moves from the project's version at the base to its version at HEAD)
+// is not covered for the same reason: no operator can exercise it. Only files
+// the caller names with --generated qualify, because the version transition
+// comes from the diff under review and so cannot by itself prove a release.
+// Judged on the whole file, so any other change keeps it eligible.
+const projectVersion = (source) => {
+  try { return JSON.parse(source).version; } catch { return undefined; }
+};
+const fromVersion = projectVersion(readOldSource(readGit, base, 'package.json'));
+const toVersion = projectVersion(readFileSafe(resolve(root, 'package.json')));
+const versionOnlyFiles = diffEligibleFilesAll.filter((f) => {
+  if (commentOnly.has(f) || !generatedFiles.has(f)) return false;
+  const oldSide = deletedLines[f];
+  // A rename onto a generated path compares another file's history: not exempt.
+  if (oldSide === undefined || oldSide.oldPath !== f) return false;
+  const newSource = readFileSafe(resolve(root, f));
+  if (newSource === null) return false;
+  return fileChangeIsVersionOnly({
+    oldSource: readOldSource(readGit, base, oldSide.oldPath),
+    newSource,
+    fromVersion,
+    toVersion,
+  });
+});
+const notCovered = new Set([...commentOnlyFiles, ...versionOnlyFiles]);
+const diffEligibleFiles = diffEligibleFilesAll.filter((f) => !notCovered.has(f));
 
 // Never a SILENT skip. A coverage gate that goes green by not looking is worse
 // than no gate, so say exactly what was not covered and why — in the JSON
 // report as well as the text one.
 function skippedReport() {
-  return commentOnlyFiles.length > 0 ? { skipped: { commentOnly: [...commentOnlyFiles] } } : {};
+  const skipped = {
+    ...(commentOnlyFiles.length > 0 ? { commentOnly: [...commentOnlyFiles] } : {}),
+    ...(versionOnlyFiles.length > 0 ? { versionOnly: [...versionOnlyFiles] } : {}),
+  };
+  return Object.keys(skipped).length > 0 ? { skipped } : {};
 }
 if (commentOnlyFiles.length > 0 && !useJson) {
   console.log(
@@ -358,6 +393,13 @@ if (commentOnlyFiles.length > 0 && !useJson) {
     'lines, so there is no changed behaviour to mutate and this gate does not cover them:'
   );
   for (const f of commentOnlyFiles) console.log(`  ${f}`);
+}
+if (versionOnlyFiles.length > 0 && !useJson) {
+  console.log(
+    `hollow-test: ${versionOnlyFiles.length} changed file(s) changed only version literals, ` +
+    'so there is no changed behaviour to mutate and this gate does not cover them:'
+  );
+  for (const f of versionOnlyFiles) console.log(`  ${f}`);
 }
 
 // ── explicit --target / --rails resolution ──────────────────────────────────
@@ -512,12 +554,14 @@ for (const f of explicitFiles) {
 // unverified — there is simply no changed behaviour in it. Reported, then a
 // clean exit, rather than the "nothing to mutate" refusal below, which exists
 // for a diff whose source files were never eligible in the first place.
-if (diffEligibleFiles.length === 0 && explicitFiles.length === 0 && commentOnlyFiles.length > 0) {
+if (diffEligibleFiles.length === 0 && explicitFiles.length === 0 && notCovered.size > 0) {
   if (useJson) {
     printJson({ ...buildJsonReport([]), ...skippedReport() });
     process.exit(0);
   }
-  pass('comment-only diff — no changed behaviour to mutate');
+  pass(versionOnlyFiles.length > 0
+    ? 'comment- or version-only diff — no changed behaviour to mutate'
+    : 'comment-only diff — no changed behaviour to mutate');
 }
 
 if (diffEligibleFiles.length === 0 && explicitFiles.length === 0) {
