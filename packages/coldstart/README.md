@@ -77,14 +77,19 @@ coldstart T3 --tickets path/to/tickets.json
 
 ## Caching
 
-A real (non-`--prompt-only`) audit records `{ticketHash, model, gaps}` into
-`.adlc/manifest.jsonl` after it runs. The NEXT run, for the SAME ticket, skips
-the LLM call entirely when it finds a matching entry: same `ticketHash` (the
-ticket's content is unchanged — editing anything about it produces a
-different hash) and same *resolved* model id (not just the same `--tier` —
-switching `ADLC_MODEL_CHEAP` invalidates the cache even though `--tier cheap`
-stays the same flag). A cached run reports `"cached": true` in `--json`
-output and `(cached)` in the human-readable report.
+A real (non-`--prompt-only`) audit records `{ticketHash, model, gaps,
+textChars, cap}` into `.adlc/manifest.jsonl` after it runs. The NEXT run, for
+the SAME ticket, skips the LLM call entirely when it finds a matching entry:
+same `ticketHash` (the ticket's content is unchanged — editing anything about
+it produces a different hash), same *resolved* model id (not just the same
+`--tier` — switching `ADLC_MODEL_CHEAP` invalidates the cache even though
+`--tier cheap` stays the same flag), and a ticket that fit under the `cap`
+that audit ran with. The auditor sees at most the first 64,000 characters of
+the serialized ticket, so a verdict recorded under a smaller cap for a longer
+ticket was an audit of a prefix and is not reused; entries recorded before
+`cap` was stored are treated as audited under the earlier 8,000. A cached run
+reports `"cached": true` in `--json` output and `(cached)` in the
+human-readable report.
 
 ```sh
 # First run audits for real and records the verdict

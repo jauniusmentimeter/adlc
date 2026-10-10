@@ -14,7 +14,7 @@ import { fence } from '@adlc/core';
 // reason: large enough that a realistic ticket is never truncated, while
 // still bounding a pathological one. At 8000, a head-biased cut (#1007) drops
 // a long ticket's closing acceptance criteria, which this gate must check.
-const TICKET_TEXT_MAX_CHARS = 64_000;
+export const TICKET_TEXT_MAX_CHARS = 64_000;
 
 export const SYSTEM_PROMPT =
   'You are a senior engineer auditing a ticket for executability. ' +

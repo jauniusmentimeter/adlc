@@ -4,7 +4,7 @@
 import { complete as coreComplete, extractJson as coreExtractJson, detectProvider, resolveModel } from '@adlc/core';
 import { ticketHash } from '@adlc/tickets';
 import { loadFiltered } from '@adlc/gate-manifest/lib/show.mjs';
-import { buildPrompt, SYSTEM_PROMPT } from './prompt.mjs';
+import { buildPrompt, SYSTEM_PROMPT, ticketToText } from './prompt.mjs';
 import { findCachedVerdict } from './cache.mjs';
 import { normalizeGaps, UNREADABLE_VERDICT_PREFIX } from './normalize-gaps.mjs';
 
@@ -111,6 +111,9 @@ export function resolveExpectedModel(tier, env = process.env) {
  * entry's gaps. Caching is keyed on the RESOLVED model id, not the abstract
  * tier — switching `ADLC_MODEL_CHEAP` changes what "cheap" resolves to, and
  * a cache entry from the old model must not silently cover the new one.
+ * An entry is also reused only if the ticket fit under the cap that audit ran
+ * with (see cache.mjs): the auditor sees at most TICKET_TEXT_MAX_CHARS, so an
+ * entry recorded under a smaller cap was an audit of a prefix.
  *
  * @param {object[]} tickets
  * @param {string} [tier]
@@ -148,7 +151,7 @@ export async function checkAll(tickets, tier = 'cheap', opts = {}) {
     if (!force && model) {
       const hash = ticketHash(ticket);
       const entries = loadCacheEntriesFn(ticket.id);
-      const cached = findCachedVerdict(entries, { ticketHash: hash, model, maxAgeMs, now });
+      const cached = findCachedVerdict(entries, { ticketHash: hash, model, textChars: ticketToText(ticket).length, maxAgeMs, now });
       if (cached) {
         results.push({ id: ticket.id, gaps: cached.gaps, usage: null, cached: true });
         continue;
