@@ -102,12 +102,15 @@ export function findCachedVerdict(entries, { ticketHash, model, textChars, maxAg
  * Build the list of gate-manifest record() calls a coldstart run should
  * make: one per ticket that was actually audited this run — never for a
  * cache hit (it reuses prior evidence, recording again would just duplicate
- * it) and never for the ADLC_GATE_MOCK_RESPONSE test seam (`mocked: true` —
- * no real call was made, nothing real to report). Returns `[]` when there
+ * it), never for the ADLC_GATE_MOCK_RESPONSE test seam (`mocked: true` —
+ * no real call was made, nothing real to report), and never for an over-cap
+ * ticket (`oversize: true` — a refusal to audit, not an audit; an entry here
+ * could never be a valid hit and would only grow the ledger by one line per
+ * rerun). Returns `[]` when there
  * is nothing to record, which the caller can iterate directly with no
  * separate "is there anything to record?" branch to test.
  *
- * @param {Array<{id:string, gaps:object[], usage:object|null, cached?:boolean, mocked?:boolean}>} results
+ * @param {Array<{id:string, gaps:object[], usage:object|null, cached?:boolean, mocked?:boolean, oversize?:boolean}>} results
  * @param {object[]} targets - the ticket objects checkAll was run against, same order/ids as results
  * @param {object} opts
  * @param {string|null} opts.model - resolveExpectedModel's output; null means no provider was configured, so no cache data can be keyed
@@ -117,7 +120,7 @@ export function findCachedVerdict(entries, { ticketHash, model, textChars, maxAg
 export function buildRecordPlan(results, targets, { model, tier }) {
   const targetsById = new Map(targets.map((t) => [t.id, t]));
   return results
-    .filter((r) => !r.cached && !r.mocked)
+    .filter((r) => !r.cached && !r.mocked && !r.oversize)
     .map((result) => {
       const ticket = targetsById.get(result.id);
       const data = { tier };

@@ -69,3 +69,44 @@ test('checkAll: a legacy clean cache entry cannot rescue an over-cap ticket — 
   assert.equal(results[0].gaps.length, 1);
   assert.match(results[0].gaps[0].why_blocking, /split/);
 });
+
+// An overflow is a refusal to audit, not an audit: there is no model verdict
+// to cache and the ledger must not grow by one unusable entry per rerun.
+test('checkAll marks an over-cap result oversize and buildRecordPlan records nothing for it', async () => {
+  const { buildRecordPlan } = await import('../lib/cache.mjs');
+  const big = ticketOfExactly(TICKET_TEXT_MAX_CHARS + 1, 'T-HUGE');
+  const results = await checkAll([big], 'cheap', {
+    checkTicketFn: buildCheckTicket(refuseToCall, neverParses, 'cheap'),
+    loadCacheEntriesFn: () => [],
+    resolveModelFn: () => 'm',
+  });
+  assert.equal(results[0].oversize, true);
+  assert.deepEqual(buildRecordPlan(results, [big], { model: 'm', tier: 'cheap' }), []);
+});
+
+test('checkAll refuses an over-cap ticket BEFORE the cache lookup and before any checkTicketFn', async () => {
+  const big = ticketOfExactly(TICKET_TEXT_MAX_CHARS + 1, 'T-HUGE');
+  let lookups = 0;
+  const results = await checkAll([big], 'cheap', {
+    checkTicketFn: async () => { throw new Error('must not be reached'); },
+    loadCacheEntriesFn: () => { lookups++; return []; },
+    resolveModelFn: () => 'm',
+  });
+  assert.equal(lookups, 0, 'a prefix audit can never be a valid hit, so nothing is looked up');
+  assert.equal(results[0].gaps.length, 1);
+  assert.equal(results[0].cached, false);
+});
+
+test('the ADLC_GATE_MOCK_RESPONSE test seam cannot pass an over-cap ticket', async (t) => {
+  const prev = { mock: process.env.ADLC_GATE_MOCK_RESPONSE, env: process.env.NODE_ENV };
+  process.env.ADLC_GATE_MOCK_RESPONSE = '{"gaps": []}';
+  process.env.NODE_ENV = 'test';
+  t.after(() => {
+    if (prev.mock === undefined) delete process.env.ADLC_GATE_MOCK_RESPONSE; else process.env.ADLC_GATE_MOCK_RESPONSE = prev.mock;
+    if (prev.env === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prev.env;
+  });
+  const big = ticketOfExactly(TICKET_TEXT_MAX_CHARS + 1, 'T-HUGE');
+  const results = await checkAll([big], 'cheap');
+  assert.equal(results[0].gaps.length, 1, 'the mocked clean verdict must not be served for a ticket the auditor could not see whole');
+  assert.equal(results[0].oversize, true);
+});

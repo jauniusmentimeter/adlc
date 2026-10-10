@@ -95,7 +95,10 @@ A ticket whose serialization is itself over the cap is not sent to the model
 at all: the gate reports the overflow as its one gap (`ticket exceeds the
 auditable size`, naming the size and the cap) and exits `2`, because a verdict
 on the first 64,000 characters would be bound to the hash of a ticket whose
-later acceptance criteria were never read. Split the ticket.
+later acceptance criteria were never read. Nothing is recorded for it, and
+`--prompt-only` (with or without `--record-verdict`) emits no prompt for a run
+that includes one, so an operator's answer cannot be stored against a ticket
+they never saw whole. Split the ticket.
 
 ```sh
 # First run audits for real and records the verdict

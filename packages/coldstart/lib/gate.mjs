@@ -172,6 +172,15 @@ export async function checkAll(tickets, tier = 'cheap', opts = {}) {
 
   const results = [];
   for (const ticket of tickets) {
+    // Decided before the cache and before any audit path (real, injected, or
+    // the mock seam): a ticket the auditor cannot see whole has no valid
+    // cached verdict and gets no model call. `oversize` tells buildRecordPlan
+    // this is a refusal to audit, not an audit — nothing to record.
+    const oversize = oversizeGap(ticket);
+    if (oversize) {
+      results.push({ id: ticket.id, gaps: [oversize], usage: null, cached: false, oversize: true });
+      continue;
+    }
     if (!force && model) {
       const hash = ticketHash(ticket);
       const entries = loadCacheEntriesFn(ticket.id);
