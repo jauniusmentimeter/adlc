@@ -274,6 +274,39 @@ test('handler: an unlink of an untracked or out-of-scope file stays silent (only
   } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ---- root resolution: v2 `location` has no `worktree`; the project root is `project.directory` ----
+test('nested launch: rails resolve against the project root, not the launch directory', async () => {
+  const dir = gitRepo({ tickets: T1 });
+  const saved = { ...process.env };
+  try {
+    process.env.ADLC_P4_ENFORCEMENT = '1';
+    process.env.ADLC_TICKET = 'T1';
+    const launchDir = join(dir, 'src');
+    const plugin = await loadPlugin({ root: dir, launchDir });
+    await assert.rejects(() => plugin.before('write', { filePath: join(dir, 'test', 'x.mjs') }), /rails-guard/, 'a frozen rail is still denied');
+    // The host tags events with the directory OpenCode was launched in.
+    writeFileSync(join(dir, 'test', 'x.mjs'), 'SPOOFED WRITE\n');
+    const { lines } = await captureStderr(() => plugin.emit(filesystemChanged(join(dir, 'test', 'x.mjs'), { directory: launchDir })));
+    plugin.cleanup();
+    assert.equal(readFileSync(join(dir, 'test', 'x.mjs'), 'utf8'), RAIL_CONTENT, 'the watcher backstop works from the nested launch too');
+    assert.equal(lines.length, 1);
+  } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a project directory that does not contain the launch directory is ignored (global project)', async () => {
+  const dir = gitRepo({ tickets: T1 });
+  const saved = { ...process.env };
+  try {
+    process.env.ADLC_P4_ENFORCEMENT = '1';
+    process.env.ADLC_TICKET = 'T1';
+    for (const projectDir of ['/', '/somewhere/else']) {
+      const plugin = await loadPlugin({ root: dir, projectDir });
+      await assert.rejects(() => plugin.before('write', { filePath: join(dir, 'test', 'x.mjs') }), /rails-guard/, `projectDir=${projectDir}`);
+      plugin.cleanup();
+    }
+  } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ---- permission.evaluate lever (2.1) ----
 test('permission.evaluate: rail-target permission → effect deny with a message', async () => {
   const dir = gitRepo({ tickets: T1 });

@@ -112,7 +112,10 @@ function createEventBus() {
  * Build a fake v2 plugin context.
  *
  * @param {object} [opts]
- * @param {string} [opts.root]  `ctx.location.directory`
+ * @param {string} [opts.root]  `ctx.location.directory` (and `project.directory`)
+ * @param {string} [opts.launchDir]  `ctx.location.directory` when OpenCode was launched
+ *   from somewhere other than the project root (a nested directory)
+ * @param {string} [opts.projectDir]  `ctx.location.project.directory`; defaults to `root`
  * @param {object} [opts.options]  `ctx.options`
  * @param {object} [opts.session]  extra `ctx.session` methods (create/prompt/…)
  * @param {object} [opts.generate]  `ctx.generate`
@@ -122,7 +125,7 @@ function createEventBus() {
  * @param {(kind: string, name: string) => void} [opts.onRegister]  called as each
  *   registration is ACKNOWLEDGED; may throw to fail that registration
  */
-export function createFakeCtx({ root = process.cwd(), options = {}, session = {}, generate, agent, ackDelayMs = 0, onRegister } = {}) {
+export function createFakeCtx({ root = process.cwd(), launchDir, projectDir, options = {}, session = {}, generate, agent, ackDelayMs = 0, onRegister } = {}) {
   const registrations = { tool: new Map(), session: new Map(), permission: new Map(), transforms: [] };
   const log = [];
   const ack = async (kind, name) => {
@@ -139,7 +142,7 @@ export function createFakeCtx({ root = process.cwd(), options = {}, session = {}
   const events = createEventBus();
   const ctx = {
     app: { name: 'opencode', version: '2.0.21', channel: 'test' },
-    location: { directory: root, project: { id: 'prj_test', directory: root, canonical: root } },
+    location: { directory: launchDir ?? root, project: { id: 'prj_test', directory: projectDir ?? root, canonical: projectDir ?? root } },
     options,
     event: { subscribe: (o) => events.subscribe(o) },
     permission: { hook: hookOn('permission') },

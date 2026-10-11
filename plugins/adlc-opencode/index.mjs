@@ -28,7 +28,7 @@ import { buildProsecuteTool } from './lib/prosecute-tool.mjs';
 import { buildCompactionContext } from './lib/compaction.mjs';
 import { checkCommandOrder, checkCommandTamper } from './lib/command-gate.mjs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 // The plugin package root (…/plugins/adlc-opencode), used to byte-compare a
 // deployed command against its packaged source for the tamper advisory, and to
@@ -73,12 +73,26 @@ export function optionsToEnv(options = {}) {
   return env;
 }
 
-/** The repo root: the first non-empty of the documented location candidates. */
+const nonEmpty = (v) => (typeof v === 'string' && v.trim() ? v : null);
+
+/** Is `child` the same as, or inside, `parent`? */
+function isWithin(child, parent) {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * The repo root. v2 has no `worktree`: `location.directory` is where OpenCode was
+ * launched (possibly nested) and `location.project.directory` is the project
+ * root. The rail/ticket state lives at the root, so prefer it — but only when it
+ * contains the launch directory and is not the filesystem root, because a
+ * non-git ("global") project reports a root unrelated to where the work is.
+ */
 function resolveRoot(location) {
-  for (const candidate of [location?.worktree, location?.directory, location?.project?.worktree]) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate;
-  }
-  return process.cwd();
+  const launch = nonEmpty(location?.directory);
+  const project = nonEmpty(location?.project?.directory);
+  if (project && launch && resolve(project) !== resolve('/') && isWithin(launch, project)) return project;
+  return launch ?? project ?? process.cwd();
 }
 
 const sleep = (ms, signal) => new Promise((done) => {
@@ -222,7 +236,7 @@ async function setup(ctx = {}) {
 
   const sameLocation = (ev) => {
     const dir = ev?.location?.directory;
-    return typeof dir !== 'string' || !dir || resolve(dir) === resolve(root);
+    return typeof dir !== 'string' || !dir || isWithin(dir, root);
   };
 
   const onEvent = async (ev) => {
