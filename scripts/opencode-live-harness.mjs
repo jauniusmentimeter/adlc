@@ -154,6 +154,55 @@ export async function startMockProvider(respond) {
   return { server, baseURL: `http://127.0.0.1:${server.address().port}/v1` };
 }
 
+/** The frozen rail the live deny proof tries to overwrite, and its committed content. */
+export const DENY_RAIL = 'test/x.mjs';
+export const DENY_RAIL_ORIGINAL = 'export const frozen = true;\n';
+
+/** The `patch` tool's envelope turning DENY_RAIL's committed content into a different one. */
+export const denyPatchText = () => `*** Begin Patch\n*** Update File: ${DENY_RAIL}\n@@\n-${DENY_RAIL_ORIGINAL.trimEnd()}\n+export const frozen = false;\n*** End Patch\n`;
+
+/**
+ * Mock-provider script for the live deny proof: utility calls (no tools) get a
+ * title; the first tool-bearing call mutates the rail — `patch` when advertised,
+ * else `write` with v2's `path` argument; any call that already carries tool
+ * results ends the conversation, and those results are appended to `sink`.
+ */
+export function denyResponder(sink) {
+  return ({ messages, tools }) => {
+    if (tools.length === 0) return reply.text('live deny proof');
+    const results = messages.filter((m) => m.role === 'tool');
+    if (results.length === 0) {
+      return toolNames(tools).includes('patch')
+        ? reply.toolCall('patch', { patchText: denyPatchText() })
+        : reply.toolCall('write', { path: DENY_RAIL, content: 'OVERWRITTEN BY MODEL\n' });
+    }
+    sink.push(...results.map(toolResultText));
+    return reply.text('done');
+  };
+}
+
+/**
+ * Mock-provider script for the live tool proof. `seen` records what the host
+ * advertised and whether the keyless prompt arrived; a request carrying
+ * `marker` is the keyless generate call and is answered with `verdict`.
+ */
+export function toolResponder({ marker, verdict }, seen) {
+  return ({ messages, tools }) => {
+    const names = toolNames(tools);
+    if (names.includes('adlc_gate')) seen.advertisedAdlcGate = true;
+    if (names.includes('adlc_prosecute')) seen.advertisedAdlcProsecute = true;
+    if (JSON.stringify(messages).includes(marker)) {
+      seen.keylessAnswered = true;
+      return reply.text(verdict);
+    }
+    if (tools.length === 0) return reply.text('ok');
+    const results = messages.filter((m) => m.role === 'tool');
+    if (results.length === 0) return reply.toolCall('adlc_gate', { gate: 'spec-lint' });
+    seen.toolResults.push(...results.map(toolResultText));
+    return reply.text('done');
+  };
+}
+
 /** Names of the tools advertised in one provider request. */
 export const toolNames = (tools) => tools.map((t) => t?.function?.name ?? t?.name);
 

@@ -29,35 +29,19 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  makeReporter, requireOpencodeV2, MOCK_PATCH_MODEL, installPackedPlugin, startMockProvider, reply,
-  toolResultText, toolNames, createProject, writeConfig, writePermissionProbe, readProbe,
-  gitInit, runOpencode, assertPluginsLoaded,
+  makeReporter, requireOpencodeV2, MOCK_PATCH_MODEL, installPackedPlugin, startMockProvider,
+  createProject, writeConfig, writePermissionProbe, readProbe,
+  gitInit, runOpencode, assertPluginsLoaded, DENY_RAIL as RAIL, DENY_RAIL_ORIGINAL as RAIL_ORIGINAL, denyResponder,
 } from './opencode-live-harness.mjs';
 
 const REQUIRE = process.argv.includes('--require');
 const KEEP = process.argv.includes('--keep');
-const RAIL = 'test/x.mjs';
-const RAIL_ORIGINAL = 'export const frozen = true;\n';
 
 const { log, fail } = makeReporter('opencode-live-deny');
 log(`opencode ${requireOpencodeV2({ log, fail, require: REQUIRE })}`);
 
-// Every conversation: first tool-bearing call → mutate test/x.mjs — `patch`
-// when advertised (patchText envelope), else `write` with v2's `path`
-// argument; any call that already carries a tool result → "done".
-const PATCH_TEXT = `*** Begin Patch\n*** Update File: ${RAIL}\n@@\n-export const frozen = true;\n+export const frozen = false;\n*** End Patch\n`;
 let toolResults = [];
-const { server, baseURL } = await startMockProvider(({ messages, tools }) => {
-  if (tools.length === 0) return reply.text('live deny proof'); // title/utility calls
-  const results = messages.filter((m) => m.role === 'tool');
-  if (results.length === 0) {
-    return toolNames(tools).includes('patch')
-      ? reply.toolCall('patch', { patchText: PATCH_TEXT })
-      : reply.toolCall('write', { path: RAIL, content: 'OVERWRITTEN BY MODEL\n' });
-  }
-  toolResults.push(...results.map(toolResultText));
-  return reply.text('done');
-});
+const { server, baseURL } = await startMockProvider(({ messages, tools }) => denyResponder(toolResults)({ messages, tools }));
 log(`mock provider at ${baseURL}`);
 
 const { work, project, home, cleanup } = createProject('oc-live-deny-');

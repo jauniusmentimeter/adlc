@@ -40,7 +40,7 @@ const PKG_ROOT = dirname(fileURLToPath(import.meta.url));
 export const RAIL_NOTICE_TOOLS = ['edit', 'write', 'patch', 'apply_patch'];
 
 /** Watcher checks that say nothing useful about a deleted file. */
-const DELETE_NOISE_CHECKS = new Set(['scope', 'suppression']);
+const DELETE_NOISE_CHECKS = new Set(['scope']);
 
 const RESUBSCRIBE_INITIAL_MS = 100;
 const RESUBSCRIBE_MAX_MS = 5000;
@@ -264,8 +264,8 @@ async function setup(ctx = {}) {
       const { actions } = handleFileEdited({ file, root, env, state: watcherState });
       // A deletion is still a mutation of a frozen rail, so it is checked and a
       // tracked rail is restored from HEAD; a failed restore is surfaced like any
-      // other. Only the scope and suppression checks are noise for a file that is
-      // simply gone.
+      // other. Only the scope check is noise for a file that is simply gone (a
+      // deletion adds no lines, so the suppression check has nothing to report).
       const deleted = ev?.data?.event === 'unlink';
       for (const a of actions) {
         if (deleted && DELETE_NOISE_CHECKS.has(a.check)) continue;

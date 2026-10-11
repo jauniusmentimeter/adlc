@@ -178,6 +178,30 @@ test('AC16b: the reconnect backoff leaves no abort listener behind once its time
   assert.equal(live, 0, 'every listener was removed after a normal wake-up');
 });
 
+test('AC16c: the reconnect backoff ends as soon as its signal aborts, long before the delay', async () => {
+  const ctl = new AbortController();
+  const started = Date.now();
+  const sleeping = abortableSleep(60_000, ctl.signal);
+  setTimeout(() => ctl.abort(), 20);
+  await sleeping;
+  assert.ok(Date.now() - started < 5_000, 'an abort wakes the sleeper instead of waiting out the delay');
+  const already = new AbortController();
+  already.abort();
+  await abortableSleep(60_000, already.signal); // resolves at once rather than hanging
+});
+
+test('AC16c: an ended event stream is resubscribed only after the initial backoff', async (t) => {
+  const dir = repo(t);
+  const p = await loadPlugin({ root: dir });
+  await p.events.waitForSubscription(1);
+  const endedAt = Date.now();
+  p.events.end();
+  await p.events.waitForSubscription(2);
+  const waited = Date.now() - endedAt;
+  p.cleanup();
+  assert.ok(waited >= 90, `resubscribed after ${waited} ms; the first backoff is 100 ms, not an immediate retry`);
+});
+
 test('AC16: an ended event stream is resubscribed, and cleanup stops the loop', async (t) => {
   const dir = repo(t);
   const p = await loadPlugin({ root: dir });

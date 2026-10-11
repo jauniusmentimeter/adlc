@@ -274,6 +274,20 @@ test('OpenCode marketing facts claim enforce-by-default rails', () => {
   assert.ok(oc?.operate.lines.includes('npm test --workspace=@adlc/opencode'));
 });
 
+test('OpenCode marketing facts state the version floor the package and CI actually enforce', () => {
+  const oc = integrationFor('opencode');
+  const peer = JSON.parse(readFileSync(path.join(repoRoot, 'plugins/adlc-opencode/package.json'), 'utf8')).peerDependencies['@opencode/plugin'];
+  const [, floor, ceiling] = /^>=(\d+\.\d+\.\d+) <(\d+)$/.exec(peer) ?? [];
+  assert.ok(floor, `peer range ${peer} has the shape >=X.Y.Z <N`);
+  const ci = readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
+  assert.ok(ci.includes(`@opencode/cli@${floor}`), 'CI pins the same OpenCode version the docs call the floor');
+  assert.ok(oc.note.includes(`Requires OpenCode >= ${floor} `), 'the install note names the floor');
+  assert.ok(oc.note.includes(`@opencode/plugin ${peer}`), 'the install note quotes the real peer range');
+  assert.ok(oc.enforcement.session.body.includes(`on OpenCode >= ${floor}.`), 'the enforcement claim names the floor');
+  assert.ok(oc.hero.identity.includes(`real OpenCode ${floor.split('.')[0]} binary`), 'the live-proof claim names the supported major');
+  assert.equal(Number(floor.split('.')[0]) + 1, Number(ceiling), 'the supported range is exactly one major');
+});
+
 test('Pi marketing facts emphasize proactive/reactive gates and team install', () => {
   const pi = integrationFor('pi');
   assert.ok(pi?.install.some((c) => c.includes('pi install -l')));

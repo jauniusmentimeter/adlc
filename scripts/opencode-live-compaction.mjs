@@ -30,9 +30,8 @@ function hostCtx(dir) {
   const hooks = new Map();
   const queue = [];
   let wake = null;
-  const registration = { dispose() {} };
   const hookDomain = (domain) => ({
-    hook: async (name, cb) => { hooks.set(`${domain}.${name}`, cb); return registration; },
+    hook: async (name, cb) => { hooks.set(`${domain}.${name}`, cb); },
   });
   return {
     hooks,
@@ -40,7 +39,7 @@ function hostCtx(dir) {
     ctx: {
       location: { directory: dir, project: { id: 'live', directory: dir, canonical: dir } },
       options: {},
-      tool: { ...hookDomain('tool'), transform: async () => registration },
+      tool: { ...hookDomain('tool'), transform: async () => {} },
       session: hookDomain('session'),
       permission: hookDomain('permission'),
       event: {
