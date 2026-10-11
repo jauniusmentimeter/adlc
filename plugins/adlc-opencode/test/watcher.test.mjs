@@ -242,17 +242,34 @@ test('handler: a write from an UNKNOWN tool (no before-hook interception) is res
   } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('handler: an unlink event is not a write — the watcher takes no action', async () => {
+test('handler: DELETING a frozen tracked rail (unlink event) is restored from HEAD', async () => {
   const dir = gitRepo({ tickets: T1 });
   const saved = { ...process.env };
   try {
     process.env.ADLC_P4_ENFORCEMENT = '1';
     process.env.ADLC_TICKET = 'T1';
     const plugin = await loadPlugin({ root: dir });
-    writeFileSync(join(dir, 'test', 'x.mjs'), 'SPOOFED WRITE\n');
+    rmSync(join(dir, 'test', 'x.mjs'));
     const { lines } = await captureStderr(() => plugin.emit(filesystemChanged(join(dir, 'test', 'x.mjs'), { event: 'unlink', directory: dir })));
     plugin.cleanup();
-    assert.equal(readFileSync(join(dir, 'test', 'x.mjs'), 'utf8'), 'SPOOFED WRITE\n', 'unlink is not routed to the restore path');
+    assert.equal(readFileSync(join(dir, 'test', 'x.mjs'), 'utf8'), RAIL_CONTENT, 'deleted rail restored');
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /^\[adlc\] error: .*rails-backstop/);
+  } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('handler: an unlink of an untracked or out-of-scope file stays silent (only a restore is reported)', async () => {
+  const dir = gitRepo({ tickets: T1 });
+  const saved = { ...process.env };
+  try {
+    process.env.ADLC_P4_ENFORCEMENT = '1';
+    process.env.ADLC_TICKET = 'T1';
+    const plugin = await loadPlugin({ root: dir });
+    const { lines } = await captureStderr(async () => {
+      await plugin.emit(filesystemChanged(join(dir, 'test', 'never-tracked.mjs'), { event: 'unlink', directory: dir }));
+      await plugin.emit(filesystemChanged(join(dir, 'src', 'gone.mjs'), { event: 'unlink', directory: dir }));
+    });
+    plugin.cleanup();
     assert.deepEqual(lines, []);
   } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
 });

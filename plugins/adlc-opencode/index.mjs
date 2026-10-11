@@ -240,9 +240,16 @@ async function setup(ctx = {}) {
     // scope, and the tool-name-independent rail backstop). Events cannot block,
     // so these are all post-hoc.
     if (type === 'filesystem.changed') {
-      if (ev?.data?.event === 'unlink') return;
       const { actions } = handleFileEdited({ file: ev?.data?.file, root, env, state: watcherState });
-      for (const a of actions) notify(a.message, a.action === 'restored' ? 'error' : 'warning');
+      // A deletion is still a mutation of a frozen rail, so it is checked and a
+      // tracked rail is restored from HEAD. Anything short of a restore (scope or
+      // suppression warnings, an untracked path with nothing to restore) is noise
+      // for a file that is simply gone.
+      const deleted = ev?.data?.event === 'unlink';
+      for (const a of actions) {
+        if (deleted && a.action !== 'restored') continue;
+        notify(a.message, a.action === 'restored' ? 'error' : 'warning');
+      }
       return;
     }
 

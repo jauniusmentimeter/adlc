@@ -87,11 +87,14 @@ export function dependencyClosure(root = PLUGIN_PKG, byName = workspacePackages(
 // checkout, so a package added to the closure must not get to run an install hook.
 export const PACKED_INSTALL_ARGS = ['install', '--no-audit', '--no-fund', '--silent', '--ignore-scripts'];
 
+/** `npm pack` argv for one workspace dir; `prepack`/`prepare`/`postpack` are lifecycle hooks too. */
+export const packArgs = (dir, packDir) => ['pack', dir, '--pack-destination', packDir, '--silent', '--ignore-scripts'];
+
 /** npm-pack the closure and install the tarballs into `project`. Returns the installed plugin dir. */
 export function installPackedPlugin(project, packDir) {
   mkdirSync(packDir, { recursive: true });
   for (const dir of dependencyClosure().values()) {
-    execFileSync('npm', ['pack', dir, '--pack-destination', packDir, '--silent'], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync('npm', packArgs(dir, packDir), { stdio: ['ignore', 'ignore', 'inherit'] });
   }
   writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'live-proof', private: true }));
   const tarballs = readdirSync(packDir).filter((f) => f.endsWith('.tgz')).map((f) => join(packDir, f));
