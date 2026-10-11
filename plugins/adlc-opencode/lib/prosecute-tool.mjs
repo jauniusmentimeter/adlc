@@ -80,6 +80,12 @@ function modelLines({ models, unregisteredAgents, agentListUnavailable, singleMo
  * would falsely SHIP); a genuine clean tree returns { diff: '', error: null }.
  */
 export function captureDiff({ base = 'main', cwd = process.cwd(), spawnImpl = execFileSync } = {}) {
+  // `base` is model-supplied. execFileSync stops shell injection but not git
+  // option parsing: `--output=<path>` would make this read-only tool write a
+  // file. No ref name can start with '-', so refuse those before spawning.
+  if (/^\s*-/.test(base)) {
+    return { diff: '', error: `invalid base ref ${JSON.stringify(base)}: must not start with "-"` };
+  }
   try {
     return { diff: String(spawnImpl('git', ['diff', `${base}...HEAD`], { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }) || ''), error: null };
   } catch (err) {

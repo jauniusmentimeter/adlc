@@ -4,7 +4,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,6 +90,30 @@ test('execute: a real diff drives the deterministic loop and returns a structure
   // every one was created with the read-only lens permissions.
   assert.ok(session.calls.creates.length > 1, 'lenses and verifier ran');
   for (const c of session.calls.creates) assert.deepEqual(c.permissions, lensPermissions());
+});
+
+test('captureDiff refuses an option-like base without running git (no --output= write)', () => {
+  for (const base of ['--output=/tmp/x', '-p', ' --stat', '--no-index']) {
+    let ran = false;
+    const res = captureDiff({ base, spawnImpl: () => { ran = true; return 'diff'; } });
+    assert.equal(ran, false, `git must not run for base=${JSON.stringify(base)}`);
+    assert.equal(res.diff, '');
+    assert.match(res.error, /invalid base ref/);
+  }
+});
+
+test('captureDiff against the real git binary: an --output= base creates no file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adlc-capdiff-'));
+  try {
+    const run = (...a) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' });
+    run('init', '-q', '-b', 'main');
+    run('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    const target = join(dir, 'leak.txt');
+    const res = captureDiff({ base: `--output=${target}`, cwd: dir });
+    assert.ok(res.error, 'refused');
+    assert.equal(existsSync(target), false, 'git never wrote the output file');
+    assert.deepEqual(captureDiff({ base: 'main', cwd: dir }), { diff: '', error: null }, 'a normal ref still works');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('captureDiff distinguishes a git FAILURE from a clean empty tree', () => {
