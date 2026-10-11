@@ -161,6 +161,17 @@ test('keyless gate falls back to the host default model when the session lookup 
   }
 });
 
+test('keyless gate hands the tool call\'s cancellation signal to the generation', async () => {
+  const seen = [];
+  const generate = { text: async (_req, opts) => { seen.push(opts?.signal); return { text: 'OK' }; } };
+  const def = buildGateTool({ root: '/p', generate, spawnImpl: () => ({ status: 0, stdout: 'audit this spec' }) });
+  const parent = new AbortController();
+  await def.execute({ gate: 'spec-lint' }, { ...TOOL_CTX, signal: parent.signal });
+  assert.equal(seen.length, 1);
+  parent.abort();
+  assert.equal(seen[0].aborted, false, 'a finished generation is not retroactively aborted');
+});
+
 test('LLM-backed gate but NO generate API → falls back to the CLI (no crash)', async () => {
   const spawnImpl = (_bin, args) => {
     // without --prompt-only this is the plain CLI path

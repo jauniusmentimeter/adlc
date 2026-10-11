@@ -95,6 +95,50 @@ test('makeAsk: omits model when not given (host default)', async () => {
   assert.deepEqual(generate.calls, [{ prompt: 'q' }]);
 });
 
+/** A `generate` whose text() never answers on its own and rejects when its request signal aborts. */
+function hangingGenerate() {
+  const seen = [];
+  return {
+    seen,
+    text: (_req, opts) => new Promise((_, reject) => {
+      seen.push(opts?.signal);
+      opts?.signal?.addEventListener('abort', () => reject(new Error('aborted by host')), { once: true });
+    }),
+  };
+}
+
+test('makeAsk: a timeout aborts the in-flight generate.text request, not just the wait', async () => {
+  const generate = hangingGenerate();
+  await assert.rejects(() => makeAsk(generate, { timeoutMs: 20 })('q'), /generate\.text timed out/);
+  assert.equal(generate.seen.length, 1);
+  assert.equal(generate.seen[0].aborted, true, 'the request signal was aborted so the host stops the generation');
+});
+
+test('makeAsk: cancelling the parent tool call aborts the in-flight request', async () => {
+  const generate = hangingGenerate();
+  const parent = new AbortController();
+  const pending = makeAsk(generate, { timeoutMs: 60_000, signal: parent.signal })('q');
+  await new Promise((r) => setImmediate(r));
+  parent.abort();
+  await assert.rejects(() => pending, /aborted by host/);
+  assert.equal(generate.seen[0].aborted, true);
+});
+
+test('makeAsk: an already-cancelled parent never starts a generation', async () => {
+  const generate = hangingGenerate();
+  const parent = new AbortController();
+  parent.abort();
+  await assert.rejects(() => makeAsk(generate, { timeoutMs: 60_000, signal: parent.signal })('q'), /cancelled/);
+  assert.equal(generate.seen.length, 0, 'no request was sent to the host');
+});
+
+test('makeAsk: a successful answer leaves the request signal un-aborted', async () => {
+  const seen = [];
+  const generate = { text: async (_req, opts) => { seen.push(opts?.signal); return { text: 'ok' }; } };
+  assert.equal(await makeAsk(generate)('q'), 'ok');
+  assert.equal(seen[0].aborted, false);
+});
+
 test('makeAsk: a reply without text is an empty answer, not a crash', async () => {
   assert.equal(await makeAsk({ text: async () => ({}) })('q'), '');
 });

@@ -178,14 +178,29 @@ export function makeSessionAsk(session, { title, permissions, directory, model, 
  * @param {object} [opts]
  * @param {{providerID:string, id?:string, modelID?:string}} [opts.model]
  *   model; omit to use the host default
+ * @param {AbortSignal} [opts.signal]  the calling tool's cancellation signal
  */
-export function makeAsk(generate, { model, timeoutMs = PROMPT_TIMEOUT_MS } = {}) {
+export function makeAsk(generate, { model, timeoutMs = PROMPT_TIMEOUT_MS, signal: parentSignal } = {}) {
   if (typeof generate?.text !== 'function') return null;
   const modelRef = toModelRef(model);
   return async (text) => {
-    const res = await withTimeout(
-      generate.text({ prompt: text, ...(modelRef ? { model: modelRef } : {}) }),
-      timeoutMs, 'keyless: generate.text timed out');
-    return typeof res?.text === 'string' ? res.text.trim() : '';
+    // One controller per generation: it is aborted when the wait times out or
+    // fails and when the parent tool call is cancelled, so the host stops the
+    // request instead of leaving it in flight after the gate has already errored.
+    if (parentSignal?.aborted) throw new Error('keyless: tool call was cancelled before generation started');
+    const controller = new AbortController();
+    const onParentAbort = () => controller.abort(parentSignal.reason);
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+    try {
+      const res = await withTimeout(
+        generate.text({ prompt: text, ...(modelRef ? { model: modelRef } : {}) }, { signal: controller.signal }),
+        timeoutMs, 'keyless: generate.text timed out');
+      return typeof res?.text === 'string' ? res.text.trim() : '';
+    } catch (err) {
+      controller.abort();
+      throw err;
+    } finally {
+      parentSignal?.removeEventListener('abort', onParentAbort);
+    }
   };
 }

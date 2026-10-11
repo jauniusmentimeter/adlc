@@ -188,6 +188,9 @@ export function ensurePluginRegistered(root, entry = PLUGIN_PKG_NAME, pkgName = 
   const options = ours.map(entryOptions)
     .find((o) => o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length);
   config.plugins = [...native.filter((e) => !own(e)), options ? { package: name, options } : name];
+  // Other plugins stay where they are: they are v1-API plugins, which v2 cannot
+  // load from `plugins` either ("must export a default definition"), so moving
+  // them would turn an inert entry into a load error.
   const otherLegacy = legacy.filter((e) => !own(e));
   if (otherLegacy.length) config.plugin = otherLegacy;
   else delete config.plugin;

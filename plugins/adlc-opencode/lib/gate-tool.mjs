@@ -128,8 +128,8 @@ export function runGate({ gate, args = [], spawnImpl = spawnSync, cwd = process.
  * they work inside OpenCode with no API key. Returns a structured result, or
  * null when the host has no generate API (caller falls back to the CLI).
  */
-export async function runGateKeyless2({ gate, args = [], generate, model, cwd = process.cwd(), spawnImpl }) {
-  const ask = makeAsk(generate, { model });
+export async function runGateKeyless2({ gate, args = [], generate, model, signal, cwd = process.cwd(), spawnImpl }) {
+  const ask = makeAsk(generate, { model, signal });
   if (!ask) return null; // no generate API → let the caller fall back
   try {
     const { prompts, answers } = await runGateKeyless({
@@ -208,7 +208,7 @@ export function buildGateTool({ root = process.cwd(), generate, session, spawnIm
       // LLM-backed gate + a usable generate API → run keyless through the host model.
       if (LLM_BACKED_GATES.has(gate) && generate) {
         const model = await activeSessionModel(session, context?.sessionID, sessionLookupTimeoutMs);
-        result = await runGateKeyless2({ gate, args, generate, model, cwd: root, spawnImpl });
+        result = await runGateKeyless2({ gate, args, generate, model, signal: context?.signal, cwd: root, spawnImpl });
       }
       // Deterministic gate, no generate API, or keyless unavailable → CLI.
       if (!result) {
