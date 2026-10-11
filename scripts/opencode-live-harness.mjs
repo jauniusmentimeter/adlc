@@ -18,7 +18,7 @@
 
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -202,6 +202,39 @@ export function toolResponder({ marker, verdict }, seen) {
     return reply.text('done');
   };
 }
+
+/** Activate ticket T1 in `project` with the given frozen rails. */
+export function writeTicketFixture(project, { title, rails }) {
+  writeFileSync(join(project, '.adlc', 'tickets.json'), JSON.stringify({ tickets: [{ id: 'T1', title, rails }] }, null, 2));
+  writeFileSync(join(project, '.adlc', 'current-ticket.json'), JSON.stringify({ id: 'T1' }));
+}
+
+/** The deny proof's project: T1 freezes test/**, and DENY_RAIL is committed under it. */
+export function writeDenyFixture(project) {
+  mkdirSync(join(project, 'test'), { recursive: true });
+  writeTicketFixture(project, { title: 'Live deny fixture', rails: ['test/**'] });
+  writeFileSync(join(project, DENY_RAIL), DENY_RAIL_ORIGINAL);
+}
+
+/**
+ * A fake `adlc` on `binDir`: `spec-lint --prompt-only` prints a gate prompt
+ * carrying `marker`, so the plugin routes it to ctx.generate.text; any other
+ * invocation fails loudly.
+ */
+export function writeAdlcShim(binDir, marker) {
+  mkdirSync(binDir, { recursive: true });
+  const shim = join(binDir, 'adlc');
+  writeFileSync(shim,
+    `#!/usr/bin/env bash\n` +
+    `if [ "$1" = "--version" ]; then echo "1.11.1"; exit 0; fi\n` +
+    `if [ "$1" = "spec-lint" ]; then echo "Audit this spec for clarity. ${marker}"; exit 0; fi\n` +
+    `echo "unexpected: $*" 1>&2; exit 1\n`);
+  chmodSync(shim, 0o755);
+  return shim;
+}
+
+/** What the tool proof's mock provider observed; see toolResponder. */
+export const newToolSeen = () => ({ advertisedAdlcGate: false, advertisedAdlcProsecute: false, keylessAnswered: false, toolResults: [] });
 
 /** Names of the tools advertised in one provider request. */
 export const toolNames = (tools) => tools.map((t) => t?.function?.name ?? t?.name);

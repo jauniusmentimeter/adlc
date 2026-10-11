@@ -26,12 +26,12 @@
 // Exit codes: 0 = pass, 1 = fail, 3 = skipped (no `opencode` binary and not
 // --require). CI passes --require so a missing binary can never silently skip.
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   makeReporter, requireOpencodeV2, MOCK_PATCH_MODEL, installPackedPlugin, startMockProvider,
   createProject, writeConfig, writePermissionProbe, readProbe,
-  gitInit, runOpencode, assertPluginsLoaded, DENY_RAIL as RAIL, DENY_RAIL_ORIGINAL as RAIL_ORIGINAL, denyResponder,
+  gitInit, runOpencode, assertPluginsLoaded, DENY_RAIL as RAIL, DENY_RAIL_ORIGINAL as RAIL_ORIGINAL, denyResponder, writeDenyFixture,
 } from './opencode-live-harness.mjs';
 
 const REQUIRE = process.argv.includes('--require');
@@ -45,12 +45,8 @@ const { server, baseURL } = await startMockProvider(({ messages, tools }) => den
 log(`mock provider at ${baseURL}`);
 
 const { work, project, home, cleanup } = createProject('oc-live-deny-');
-let exitCode = 1;
 try {
-  mkdirSync(join(project, 'test'), { recursive: true });
-  writeFileSync(join(project, '.adlc', 'tickets.json'), JSON.stringify({ tickets: [{ id: 'T1', title: 'Live deny fixture', rails: ['test/**'] }] }, null, 2));
-  writeFileSync(join(project, '.adlc', 'current-ticket.json'), JSON.stringify({ id: 'T1' }));
-  writeFileSync(join(project, RAIL), RAIL_ORIGINAL);
+  writeDenyFixture(project);
   log('installing the packed plugin…');
   const pluginDir = installPackedPlugin(project, join(work, 'packs'));
   const probeLog = join(work, 'permission-probe.jsonl');
@@ -117,10 +113,9 @@ try {
   }
   log('patch treatment: patch blocked AND the deny reason reached the model');
   log('PASS — live deny proof holds (AC7)');
-  exitCode = 0;
 } finally {
   server.close();
   if (KEEP) log(`--keep: temp project retained at ${work}`);
   else cleanup();
 }
-process.exit(exitCode);
+process.exit(); // reached only on success: fail() exits 1 itself

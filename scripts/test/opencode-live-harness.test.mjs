@@ -3,12 +3,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   PACKED_INSTALL_ARGS, packArgs, REPO, PLUGIN_PKG, MOCK_MODEL, MOCK_PATCH_MODEL, DENY_RAIL, DENY_RAIL_ORIGINAL,
   dependencyClosure, writeConfig, denyPatchText, denyResponder, toolResponder, reply, toolNames,
+  writeDenyFixture, writeAdlcShim, writeTicketFixture, newToolSeen,
 } from '../opencode-live-harness.mjs';
 import { railHit } from '../../plugins/adlc-opencode/rails-checker.mjs';
 
@@ -95,4 +97,39 @@ test('toolResponder: records what was advertised, answers the keyless prompt, th
 test('reply and toolNames are exercised by the responders above', () => {
   assert.deepEqual(toolNames(toolsOf('a', 'b')), ['a', 'b']);
   assert.equal(textOf(reply.text('x')), 'x');
+});
+
+function inProject(fn) {
+  const project = mkdtempSync(join(tmpdir(), 'oc-harness-fx-'));
+  mkdirSync(join(project, '.adlc'), { recursive: true });
+  try { return fn(project); } finally { rmSync(project, { recursive: true, force: true }); }
+}
+
+test('writeDenyFixture freezes test/** under T1 and commits the rail file there', () => inProject((project) => {
+  writeDenyFixture(project);
+  const { tickets } = JSON.parse(readFileSync(join(project, '.adlc', 'tickets.json'), 'utf8'));
+  assert.deepEqual(tickets.map((t) => [t.id, t.rails]), [['T1', ['test/**']]]);
+  assert.equal(JSON.parse(readFileSync(join(project, '.adlc', 'current-ticket.json'), 'utf8')).id, 'T1');
+  assert.equal(readFileSync(join(project, DENY_RAIL), 'utf8'), DENY_RAIL_ORIGINAL);
+}));
+
+test('writeTicketFixture activates T1 with the rails it is given', () => inProject((project) => {
+  writeTicketFixture(project, { title: 'x', rails: ['locked/**'] });
+  assert.deepEqual(JSON.parse(readFileSync(join(project, '.adlc', 'tickets.json'), 'utf8')).tickets, [{ id: 'T1', title: 'x', rails: ['locked/**'] }]);
+}));
+
+test('the fake adlc answers spec-lint with the marker prompt and refuses everything else', () => inProject((project) => {
+  const bin = join(project, 'bin');
+  const shim = writeAdlcShim(bin, 'MARK_123');
+  assert.ok(statSync(shim).mode & 0o100, 'the shim is executable');
+  const run = (...args) => spawnSync(shim, args, { encoding: 'utf8' });
+  assert.equal(run('--version').stdout.trim(), '1.11.1');
+  assert.match(run('spec-lint', '--prompt-only').stdout, /MARK_123/);
+  const other = run('surprise');
+  assert.equal(other.status, 1);
+  assert.match(other.stderr, /unexpected: surprise/);
+}));
+
+test('newToolSeen starts with nothing observed', () => {
+  assert.deepEqual(newToolSeen(), { advertisedAdlcGate: false, advertisedAdlcProsecute: false, keylessAnswered: false, toolResults: [] });
 });

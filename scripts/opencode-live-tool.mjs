@@ -15,12 +15,11 @@
 // Run with --require to make a missing binary fatal (CI); without it, a missing
 // binary SKIPs (exit 3).
 
-import { writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   makeReporter, requireOpencodeV2, installPackedPlugin, startMockProvider,
   createProject, writeConfig, gitInit, runOpencode,
-  assertPluginsLoaded, toolResponder,
+  assertPluginsLoaded, toolResponder, newToolSeen, writeAdlcShim, writeTicketFixture,
 } from './opencode-live-harness.mjs';
 
 const REQUIRE = process.argv.includes('--require');
@@ -31,29 +30,18 @@ const GATE_PROMPT_MARKER = 'AUDIT_SPEC_PROMPT_5B1D';
 const { log, fail } = makeReporter('opencode-live-tool');
 log(`opencode ${requireOpencodeV2({ log, fail, require: REQUIRE })}`);
 
-const seen = { advertisedAdlcGate: false, advertisedAdlcProsecute: false, keylessAnswered: false, toolResults: [] };
+const seen = newToolSeen();
 const { server, baseURL } = await startMockProvider(toolResponder({ marker: GATE_PROMPT_MARKER, verdict: KEYLESS_VERDICT }, seen));
 log(`mock provider at ${baseURL}`);
 
 const { work, project, home, cleanup } = createProject('oc-live-tool-');
-let exitCode = 1;
 try {
-  // Fake `adlc`: `spec-lint --prompt-only` prints a gate prompt carrying the
-  // keyless marker, so the plugin routes it to ctx.generate.text.
   const bin = join(work, 'bin');
-  mkdirSync(bin, { recursive: true });
-  const adlcShim = join(bin, 'adlc');
-  writeFileSync(adlcShim,
-    `#!/usr/bin/env bash\n` +
-    `if [ "$1" = "--version" ]; then echo "1.11.1"; exit 0; fi\n` +
-    `if [ "$1" = "spec-lint" ]; then echo "Audit this spec for clarity. ${GATE_PROMPT_MARKER}"; exit 0; fi\n` +
-    `echo "unexpected: $*" 1>&2; exit 1\n`);
-  chmodSync(adlcShim, 0o755);
+  writeAdlcShim(bin, GATE_PROMPT_MARKER);
 
   // Enforcement ON with an active ticket + a real rail — proves adlc_gate is not
   // denied by the plugin's own execute.before rail guard.
-  writeFileSync(join(project, '.adlc', 'tickets.json'), JSON.stringify({ tickets: [{ id: 'T1', title: 'Live tool fixture', rails: ['locked/**'] }] }, null, 2));
-  writeFileSync(join(project, '.adlc', 'current-ticket.json'), JSON.stringify({ id: 'T1' }));
+  writeTicketFixture(project, { title: 'Live tool fixture', rails: ['locked/**'] });
   log('installing the packed plugin…');
   const pluginDir = installPackedPlugin(project, join(work, 'packs'));
   writeConfig(project, { baseURL, plugins: [pluginDir], permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
@@ -79,9 +67,8 @@ try {
   }
   log('✓ the keyless verdict flowed back through adlc_gate to the model (4.1→4.2 wiring)');
   log('PASS — native adlc_gate tool + keyless bridge proven end-to-end');
-  exitCode = 0;
 } finally {
   server.close();
   if (KEEP) log(`--keep: ${work}`); else cleanup();
 }
-process.exit(exitCode);
+process.exit(); // reached only on success: fail() exits 1 itself
