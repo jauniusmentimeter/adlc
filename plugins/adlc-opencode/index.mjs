@@ -257,11 +257,15 @@ async function setup(ctx = {}) {
     // scope, and the tool-name-independent rail backstop). Events cannot block,
     // so these are all post-hoc.
     if (type === 'filesystem.changed') {
-      const file = ev?.data?.file;
+      const reported = ev?.data?.file;
+      const origin = ev?.location?.directory;
       // The stream is server-wide and `location` is optional: a relative path
       // with no location cannot be tied to this project, and resolving it under
-      // this root could restore or quarantine the wrong file.
-      if (typeof file !== 'string' || (!isAbsolute(file) && !ev?.location?.directory)) return;
+      // this root could restore or quarantine the wrong file. With a location it
+      // is relative to THAT directory, which may be nested below the root.
+      if (typeof reported !== 'string' || !reported) return;
+      if (!isAbsolute(reported) && !(typeof origin === 'string' && origin)) return;
+      const file = isAbsolute(reported) ? reported : resolve(origin, reported);
       const { actions } = handleFileEdited({ file, root, env, state: watcherState });
       // A deletion is still a mutation of a frozen rail, so it is checked and a
       // tracked rail is restored from HEAD; a failed restore is surfaced like any

@@ -292,6 +292,27 @@ test('handler: a filesystem event with no location and a RELATIVE path is not gu
   } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('handler: a RELATIVE path from a nested location is resolved against that location, not the project root', async () => {
+  const dir = gitRepo({ tickets: T1 });
+  const saved = { ...process.env };
+  try {
+    process.env.ADLC_P4_ENFORCEMENT = '1';
+    process.env.ADLC_TICKET = 'T1';
+    // 'x.mjs' relative to <dir>/test is the frozen rail <dir>/test/x.mjs.
+    const plugin = await loadPlugin({ root: dir });
+    writeFileSync(join(dir, 'test', 'x.mjs'), 'SPOOFED WRITE\n');
+    const { lines } = await captureStderr(() => plugin.emit(filesystemChanged('x.mjs', { directory: join(dir, 'test') })));
+    assert.equal(readFileSync(join(dir, 'test', 'x.mjs'), 'utf8'), RAIL_CONTENT, 'restored via the nested location');
+    assert.equal(lines.length, 1);
+    // And a relative path that merely LOOKS like a rail under the root is not
+    // mistaken for one: <dir>/src + 'x.mjs' is <dir>/src/x.mjs, not <dir>/x.mjs.
+    writeFileSync(join(dir, 'src', 'x.mjs'), 'const fine = 1;\n');
+    const quiet = await captureStderr(() => plugin.emit(filesystemChanged('x.mjs', { directory: join(dir, 'src') })));
+    plugin.cleanup();
+    assert.deepEqual(quiet.lines, []);
+  } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ---- root resolution: v2 `location` has no `worktree`; the project root is `project.directory` ----
 test('nested launch: rails resolve against the project root, not the launch directory', async () => {
   const dir = gitRepo({ tickets: T1 });
