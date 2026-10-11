@@ -221,7 +221,11 @@ run prints `yes`.
 5. **Keyless gates use `ctx.generate.text`.** Because child sessions cannot be
    removed (gap 4), LLM-backed gates run through the stateless
    `ctx.generate.text` (no tools) instead of a child session per prompt, so a
-   gate run leaves nothing behind in the session list.
+   gate run leaves nothing behind in the session list. On `@opencode/plugin`
+   2.0.21 that call cannot be cancelled: its adapter drops the request options,
+   so a gate that times out or is cancelled returns at once but the provider
+   request still runs to completion. The plugin passes an `AbortSignal` anyway,
+   so a host that forwards request options cancels it with no plugin change.
 6. **Code Mode `execute` is denied while rails are in force.** Its JavaScript
    carries no vettable target path, so the rails guard fails closed on it like
    any unknown tool. Use the structured tools, or opt it out with

@@ -185,8 +185,11 @@ export function makeAsk(generate, { model, timeoutMs = PROMPT_TIMEOUT_MS, signal
   const modelRef = toModelRef(model);
   return async (text) => {
     // One controller per generation: it is aborted when the wait times out or
-    // fails and when the parent tool call is cancelled, so the host stops the
-    // request instead of leaving it in flight after the gate has already errored.
+    // fails and when the parent tool call is cancelled. @opencode/plugin 2.0.21's
+    // `ctx.generate.text` adapter drops its second argument, so on that host the
+    // signal does not reach the transport and a timed-out request still runs to
+    // completion (docs/integrations/opencode.md, gap 5); a host whose adapter
+    // forwards request options gets real cancellation with no change here.
     if (parentSignal?.aborted) throw new Error('keyless: tool call was cancelled before generation started');
     const controller = new AbortController();
     const onParentAbort = () => controller.abort(parentSignal.reason);
