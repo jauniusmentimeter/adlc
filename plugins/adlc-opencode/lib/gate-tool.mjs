@@ -8,7 +8,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { GATE_BINS } from '../gate-bins.mjs';
-import { runGateKeyless, makeAsk, withTimeout } from './keyless-bridge.mjs';
+import { runGateKeyless, makeAsk, activeSessionModel, SESSION_LOOKUP_TIMEOUT_MS } from './keyless-bridge.mjs';
 
 const GATE_SET = new Set(GATE_BINS);
 
@@ -49,25 +49,6 @@ export const LLM_BACKED_GATES = new Set([
   'parallax', 'premortem', 'spec-lint', 'coldstart', 'consensus-fix',
   'lesson-foundry', 'rejection-mining', 'gate-fuzzing', 'review-calibration',
 ]);
-
-// Bound on resolving the calling session's model; a local server answers in ms.
-const SESSION_LOOKUP_TIMEOUT_MS = 5_000;
-
-/**
- * The model the calling session is on, so a keyless gate answers on the model
- * the user selected rather than the host default (a stateless `generate.text`
- * has no session to inherit from). Undefined — host default — when it cannot be
- * resolved: this is a preference, never a reason to fail the gate.
- */
-async function activeSessionModel(session, sessionID, timeoutMs) {
-  if (!sessionID || typeof session?.get !== 'function') return undefined;
-  try {
-    const info = await withTimeout(Promise.resolve(session.get({ sessionID })), timeoutMs, 'adlc_gate: session lookup timed out');
-    return info?.model ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Validate + run a deterministic (non-LLM) ADLC gate as `adlc <gate> [args…]`.

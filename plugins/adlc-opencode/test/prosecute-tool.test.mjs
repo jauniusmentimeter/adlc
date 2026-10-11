@@ -175,6 +175,27 @@ test('execute: every lens and the verifier run on their agent\'s MODEL (never cr
   assert.doesNotMatch(r.content, /single-model review/);
 });
 
+test('execute: a lens with no registered agent runs on the CALLING session\'s model, not the host default', async () => {
+  const gets = [];
+  const session = mockSession(() => fenced([]));
+  session.get = async (req) => { gets.push(req); return { id: req.sessionID, model: { providerID: 'anthropic', id: 'claude-b' } }; };
+  const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: agentDomain([]), diffImpl: () => 'diff x' });
+  await def.execute({ base: 'main' }, { ...TOOL_CTX, sessionID: 'ses_caller' });
+  assert.deepEqual(gets, [{ sessionID: 'ses_caller' }]);
+  assert.ok(session.calls.creates.length > 0);
+  for (const c of session.calls.creates) assert.deepEqual(c.model, { providerID: 'anthropic', id: 'claude-b' });
+});
+
+test('execute: an unresolvable calling-session model leaves children on the host default (no crash)', async () => {
+  for (const get of [async () => { throw new Error('boom'); }, async () => ({ id: 's' }), () => new Promise(() => {}), undefined]) {
+    const session = mockSession(() => fenced([]));
+    if (get) session.get = get;
+    const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: agentDomain([]), diffImpl: () => 'diff x', sessionLookupTimeoutMs: 20 });
+    await def.execute({ base: 'main' }, { ...TOOL_CTX, sessionID: 'ses_caller' });
+    for (const c of session.calls.creates) assert.equal('model' in c, false);
+  }
+});
+
 test('execute: reviewers that all answer on one model are labelled single-model, not cross-model', async () => {
   const session = mockSession(() => fenced([]), () => ({ providerID: 'anthropic', id: 'claude-opus-5' }));
   const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: { list: async () => ({ data: ALL_AGENTS.map((id) => ({ id, name: id })) }) }, diffImpl: () => 'diff x' });

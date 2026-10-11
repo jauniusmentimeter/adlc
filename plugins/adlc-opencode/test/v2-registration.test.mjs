@@ -76,6 +76,24 @@ test('AC11: the handoff deny ignores the advisory downgrade', async (t) => {
   await assert.rejects(() => captureStderr(() => p.before('edit', { path: 'src/ok.mjs' }, { sessionID: 's1' })), /ADLC context-handoff/);
 });
 
+test('AC10b: advisoryHooks also downgrades the permission.evaluate rail lever (it must not re-block what execute.before let through)', async (t) => {
+  const dir = repo(t);
+  withEnv(t, ENFORCING);
+  const p = await captureStderr(() => loadPlugin({ root: dir, options: { advisoryHooks: true } })).then((r) => r.result);
+  const { result: e, lines } = await captureStderr(() => p.permission({ action: 'edit', resources: ['test/x.mjs'], effect: 'allow' }));
+  assert.equal(e.effect, 'allow', 'the host decision is left alone in advisory mode');
+  assert.ok(lines.some((l) => l.includes('[ADVISORY')), lines.join('\n'));
+});
+
+test('AC10c: by default permission.evaluate still denies a rail hit', async (t) => {
+  const dir = repo(t);
+  withEnv(t, ENFORCING);
+  const p = await loadPlugin({ root: dir });
+  const { result: e } = await captureStderr(() => p.permission({ action: 'edit', resources: ['test/x.mjs'], effect: 'allow' }));
+  assert.equal(e.effect, 'deny');
+  assert.match(e.message, /rails-guard/);
+});
+
 test('AC12: advisory hooks and every event branch survive an injected internal error', async (t) => {
   const dir = repo(t);
   withEnv(t, ENFORCING);

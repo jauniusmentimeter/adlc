@@ -410,11 +410,22 @@ async function setup(ctx = {}) {
           return;
         }
       }
+      // The rails lever honours the same advisory downgrade as `execute.before`:
+      // that hook already let the call through, so denying here would re-block it.
+      // (The context-handoff deny above is deliberately NOT downgradable.)
+      const railDeny = (message) => {
+        if (advisoryOnly) {
+          notify(`${message} [ADVISORY — ${advisorySource}; the CI rail-freeze gate remains authoritative]`, 'warning');
+          return;
+        }
+        e.effect = 'deny';
+        e.message = message;
+        notify(message, 'error');
+      };
       const force = resolveRailsInForce(root, env);
       if (!force.active) return;
       if (force.conflict) {
-        e.effect = 'deny';
-        e.message = 'ADLC rails-guard: active-ticket conflict — rails cannot be resolved';
+        railDeny('ADLC rails-guard: active-ticket conflict — rails cannot be resolved');
         return;
       }
       const targets = (Array.isArray(e?.resources) ? e.resources : [])
@@ -422,9 +433,7 @@ async function setup(ctx = {}) {
       for (const target of targets) {
         const hit = railHit(target, force.rails, root);
         if (hit) {
-          e.effect = 'deny';
-          e.message = `ADLC rails-guard: denied permission "${kind}" — frozen rail "${hit}" (active ticket ${force.ticketId})`;
-          notify(e.message, 'error');
+          railDeny(`ADLC rails-guard: denied permission "${kind}" — frozen rail "${hit}" (active ticket ${force.ticketId})`);
           return;
         }
       }

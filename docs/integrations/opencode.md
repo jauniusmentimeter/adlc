@@ -201,6 +201,10 @@ request its configured rules did not already deny, with the permission action
 hit is normally thrown earlier by `execute.before`, so on a blocked call the
 live proof's treatment run prints `permission.evaluate invoked: no`; the control
 run prints `yes`.
+The lever sets `effect = 'deny'` on a rail hit, and follows the same advisory
+downgrade as `execute.before`: with `ADLC_ALLOW_ADVISORY_HOOKS=1` or the
+`advisoryHooks` option it only warns, so it never re-blocks a call the tool hook
+let through. The context-handoff deny ignores that downgrade here too.
 
 ### Known v2 gaps
 

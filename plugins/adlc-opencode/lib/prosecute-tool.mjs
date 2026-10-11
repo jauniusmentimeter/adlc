@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { LENSES, VERIFIER } from './prosecutor.mjs';
 import { runProsecution, makeLensAsk } from './prosecute-runner.mjs';
 import { toToolResult, DIRECT_TOOL_OPTIONS } from './gate-tool.mjs';
+import { activeSessionModel, SESSION_LOOKUP_TIMEOUT_MS } from './keyless-bridge.mjs';
 
 /** Read an agent's system prompt from the packaged agent/<name>.md, '' if absent. */
 export function makeAgentPromptReader(pkgRoot) {
@@ -102,7 +103,7 @@ export function captureDiff({ base = 'main', cwd = process.cwd(), spawnImpl = ex
  * `pkgRoot` locates the agent prompts. v2 tool contexts carry no directory, so
  * the diff is taken in `root`.
  */
-export function buildProsecuteTool({ root = process.cwd(), pkgRoot, session, agent, diffImpl } = {}) {
+export function buildProsecuteTool({ root = process.cwd(), pkgRoot, session, agent, diffImpl, sessionLookupTimeoutMs = SESSION_LOOKUP_TIMEOUT_MS } = {}) {
   return {
     name: 'adlc_prosecute',
     description:
@@ -120,10 +121,13 @@ export function buildProsecuteTool({ root = process.cwd(), pkgRoot, session, age
       additionalProperties: false,
     },
     options: DIRECT_TOOL_OPTIONS,
-    execute: async (a) => {
+    execute: async (a, context) => {
       const base = String(a?.base ?? 'main');
       const ledger = makeModelLedger();
-      const ask = makeLensAsk(session, { agentApi: agent, directory: root, onResolved: ledger.record });
+      // A child is not parent-linked in v2, so a lens with no registered agent
+      // would otherwise answer on the host default instead of the caller's model.
+      const model = await activeSessionModel(session, context?.sessionID, sessionLookupTimeoutMs);
+      const ask = makeLensAsk(session, { agentApi: agent, directory: root, model, onResolved: ledger.record });
       if (!ask) {
         return toToolResult({
           title: 'adlc_prosecute: no session API',

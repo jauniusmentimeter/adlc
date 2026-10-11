@@ -105,6 +105,25 @@ export function withTimeout(promise, ms, onTimeoutMessage) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** Bound on resolving the calling session's model; a local server answers in ms. */
+export const SESSION_LOOKUP_TIMEOUT_MS = 5_000;
+
+/**
+ * The model the calling session is on, so work that runs outside it (a stateless
+ * `generate.text`, a child session that is not parent-linked) answers on the
+ * model the user selected rather than the host default. Undefined — host default
+ * — when it cannot be resolved: this is a preference, never a reason to fail.
+ */
+export async function activeSessionModel(session, sessionID, timeoutMs = SESSION_LOOKUP_TIMEOUT_MS) {
+  if (!sessionID || typeof session?.get !== 'function') return undefined;
+  try {
+    const info = await withTimeout(Promise.resolve(session.get({ sessionID })), timeoutMs, 'session lookup timed out');
+    return info?.model ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** v1 `{ providerID, modelID }` and v2 `{ providerID, id }` model refs → v2. */
 function toModelRef(model) {
   if (!model || typeof model !== 'object' || !model.providerID) return null;
