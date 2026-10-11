@@ -258,7 +258,7 @@ test('handler: DELETING a frozen tracked rail (unlink event) is restored from HE
   } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('handler: an unlink of an untracked or out-of-scope file stays silent (only a restore is reported)', async () => {
+test('handler: a deleted rail that CANNOT be restored is surfaced as a warning; out-of-scope deletions stay silent', async () => {
   const dir = gitRepo({ tickets: T1 });
   const saved = { ...process.env };
   try {
@@ -266,10 +266,28 @@ test('handler: an unlink of an untracked or out-of-scope file stays silent (only
     process.env.ADLC_TICKET = 'T1';
     const plugin = await loadPlugin({ root: dir });
     const { lines } = await captureStderr(async () => {
+      // not in HEAD, so `git checkout HEAD --` cannot bring it back
       await plugin.emit(filesystemChanged(join(dir, 'test', 'never-tracked.mjs'), { event: 'unlink', directory: dir }));
+      // a plain out-of-scope file that is simply gone is not a rail problem
       await plugin.emit(filesystemChanged(join(dir, 'src', 'gone.mjs'), { event: 'unlink', directory: dir }));
     });
     plugin.cleanup();
+    assert.equal(lines.length, 1, lines.join('\n'));
+    assert.match(lines[0], /^\[adlc\] warning: .*could NOT restore test\/never-tracked\.mjs/);
+  } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('handler: a filesystem event with no location and a RELATIVE path is not guessed onto this project', async () => {
+  const dir = gitRepo({ tickets: T1 });
+  const saved = { ...process.env };
+  try {
+    process.env.ADLC_P4_ENFORCEMENT = '1';
+    process.env.ADLC_TICKET = 'T1';
+    const plugin = await loadPlugin({ root: dir });
+    writeFileSync(join(dir, 'test', 'x.mjs'), 'SOMEONE ELSES WRITE\n');
+    const { lines } = await captureStderr(() => plugin.emit(filesystemChanged('test/x.mjs', {})));
+    plugin.cleanup();
+    assert.equal(readFileSync(join(dir, 'test', 'x.mjs'), 'utf8'), 'SOMEONE ELSES WRITE\n', 'not restored: the event cannot be tied to this project');
     assert.deepEqual(lines, []);
   } finally { Object.assign(process.env, saved); rmSync(dir, { recursive: true, force: true }); }
 });

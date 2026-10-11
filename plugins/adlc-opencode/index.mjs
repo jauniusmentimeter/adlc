@@ -38,6 +38,9 @@ const PKG_ROOT = dirname(fileURLToPath(import.meta.url));
 /** Built-in tools whose descriptions carry the frozen-rail notice. */
 export const RAIL_NOTICE_TOOLS = ['edit', 'write', 'patch', 'apply_patch'];
 
+/** Watcher checks that say nothing useful about a deleted file. */
+const DELETE_NOISE_CHECKS = new Set(['scope', 'suppression']);
+
 const RESUBSCRIBE_INITIAL_MS = 100;
 const RESUBSCRIBE_MAX_MS = 5000;
 
@@ -254,14 +257,19 @@ async function setup(ctx = {}) {
     // scope, and the tool-name-independent rail backstop). Events cannot block,
     // so these are all post-hoc.
     if (type === 'filesystem.changed') {
-      const { actions } = handleFileEdited({ file: ev?.data?.file, root, env, state: watcherState });
+      const file = ev?.data?.file;
+      // The stream is server-wide and `location` is optional: a relative path
+      // with no location cannot be tied to this project, and resolving it under
+      // this root could restore or quarantine the wrong file.
+      if (typeof file !== 'string' || (!isAbsolute(file) && !ev?.location?.directory)) return;
+      const { actions } = handleFileEdited({ file, root, env, state: watcherState });
       // A deletion is still a mutation of a frozen rail, so it is checked and a
-      // tracked rail is restored from HEAD. Anything short of a restore (scope or
-      // suppression warnings, an untracked path with nothing to restore) is noise
-      // for a file that is simply gone.
+      // tracked rail is restored from HEAD; a failed restore is surfaced like any
+      // other. Only the scope and suppression checks are noise for a file that is
+      // simply gone.
       const deleted = ev?.data?.event === 'unlink';
       for (const a of actions) {
-        if (deleted && a.action !== 'restored') continue;
+        if (deleted && DELETE_NOISE_CHECKS.has(a.check)) continue;
         notify(a.message, a.action === 'restored' ? 'error' : 'warning');
       }
       return;

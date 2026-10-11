@@ -43,7 +43,8 @@ the ADLC repo.
 ## Rail enforcement in this harness
 
 The bundled plugin wires a tool `execute.before` hook that denies structured
-`edit`/`write` to frozen rails declared by the active ticket. It is **advisory in
-session and gated on host SDK capability** — the unbypassable layer is the
-commit-time CI gate (`docs/ci/rails-guard.yml`). See
+`edit`/`write` to frozen rails declared by the active ticket. It **enforces by
+default** (a thrown error aborts the tool call); `ADLC_ALLOW_ADVISORY_HOOKS=1` or the
+`advisoryHooks` plugin option downgrades it to a warning. The unbypassable layer is
+still the commit-time CI gate (`docs/ci/rails-guard.yml`). See
 [`docs/integrations/opencode.md`](../../../docs/integrations/opencode.md).
