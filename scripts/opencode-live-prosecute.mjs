@@ -44,7 +44,6 @@ const effectFor = (rules, action) => rules.findLast((r) => glob(r.action, action
 // select that agent's model (a child created without one reports no model).
 const creates = [];
 const prompts = [];
-const childAgent = new Map();
 const childModel = new Map();
 const replies = new Map();
 const agentModel = (agent) => ({ providerID: 'live', id: `model-for-${agent}` });
@@ -52,13 +51,14 @@ const session = {
   create: async (req) => {
     creates.push(req);
     const id = `ses_child_${creates.length}`;
-    childAgent.set(id, req.agent);
     childModel.set(id, req.model);
     return { id };
   },
   prompt: async (req) => {
     prompts.push(req);
-    const reply = childAgent.get(req.sessionID) === 'prosecutor-verifier'
+    // The verifier is recognised by the model it was configured with: a child is
+    // never created as the repo-controlled agent, only on that agent's model.
+    const reply = childModel.get(req.sessionID)?.id === agentModel('prosecutor-verifier').id
       ? fenced({ real: true, reason: 'reproduced the seeded off-by-one' })
       : fenced([{ title: 'seeded-off-by-one', severity: 'high', file: 'src/loop.mjs', detail: 'i <= n should be i < n' }]);
     replies.set(req.sessionID, reply);
@@ -66,7 +66,7 @@ const session = {
   },
   wait: async () => {},
   context: async ({ sessionID }) => [{
-    type: 'assistant', agent: childAgent.get(sessionID) ?? 'build', model: childModel.get(sessionID),
+    type: 'assistant', agent: 'build', model: childModel.get(sessionID),
     content: [{ type: 'text', text: replies.get(sessionID) }],
   }],
 };
@@ -136,12 +136,15 @@ try {
   }
   log(`all ${creates.length} lens/verifier child sessions were fail-closed (read-only allowlist over a wildcard deny) (AC2)`);
 
-  // Per-lens models: every child is created AS its lens/verifier agent, so
-  // OpenCode resolves that agent's configured model, while the authoritative
-  // packaged charter still leads every prompt.
-  const named = new Set(creates.map((c) => c?.agent));
+  // Per-lens models: every lens/verifier child runs on its agent's configured
+  // model but is NEVER created as that (repo-controlled) agent, so an agent file
+  // cannot outrank the packaged charter that leads every prompt.
+  for (const c of creates) {
+    if ('agent' in c) fail(`child session created as a repo-controlled agent: ${JSON.stringify(c)}`);
+  }
+  const usedModels = new Set(creates.map((c) => c?.model?.id));
   for (const a of ALL_AGENTS) {
-    if (!named.has(a)) fail(`no child session created as ${a} (it would inherit the session model)`);
+    if (!usedModels.has(agentModel(a).id)) fail(`no child session ran on ${a}'s model (it would inherit the session model)`);
   }
   for (const p of prompts) {
     if (!/\n\n---\n\n/.test(p?.text ?? '') || p.text.startsWith('Prosecute this change')) fail(`child prompt for ${p?.sessionID} missing the authoritative packaged charter`);
@@ -151,7 +154,7 @@ try {
     if (JSON.stringify(got) !== JSON.stringify([`live/model-for-${a}`])) fail(`report does not attribute ${a} to its own model: ${JSON.stringify(got)}`);
   }
   if (meta.singleModel !== false || (meta.unregisteredAgents ?? []).length !== 0) fail(`unexpected reviewer-model summary: ${JSON.stringify(meta)}`);
-  log(`every lens and the verifier ran as its own agent with the packaged charter (${ALL_AGENTS.length} agents) — per-lens models apply`);
+  log(`every lens and the verifier ran on its own agent's model, none created as the agent, with the packaged charter (${ALL_AGENTS.length} agents) — per-lens models apply`);
 
   // The loop ran in FIRST-PARTY code (the tool's execute drove it) — not the host
   // model orchestrating — which is the whole point of the deterministic runner.

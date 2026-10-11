@@ -159,12 +159,11 @@ const agentDomain = (ids = ALL_AGENTS) => ({
 const lensModel = () => ({ providerID: 'vercel', id: 'vmc/adlc-session' });
 const bugOrConfirm = (text) => (isVerifier(text) ? fenced({ real: true }) : fenced([{ title: 'bug', severity: 'high', file: 'x' }]));
 
-test('execute: every lens and the verifier run AS their agent and report the model that answered', async () => {
+test('execute: every lens and the verifier run on their agent\'s MODEL (never created as the agent) and report the model that answered', async () => {
   const session = mockSession(bugOrConfirm, lensModel);
   const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: agentDomain(), diffImpl: () => 'diff x' });
   const r = await def.execute({ base: 'main' }, TOOL_CTX);
-  const named = new Set(session.calls.creates.map((c) => c.agent));
-  for (const a of ALL_AGENTS) assert.ok(named.has(a), `${a} created as its own agent`);
+  for (const c of session.calls.creates) assert.equal('agent' in c, false, 'a child is never created as a repo-controlled agent');
   for (const c of session.calls.creates) assert.deepEqual(c.permissions, lensPermissions(), 'every child still write-disabled');
   for (const p of session.calls.prompts) assert.ok(p.text.indexOf('\n\n---\n\n') > 0, 'authoritative charter always leads the prompt');
   for (const a of ALL_AGENTS) assert.deepEqual(r.metadata.models[a], [`vercel/vmc/adlc-${a}`]);

@@ -101,13 +101,15 @@ function lensHost(replyImpl, { agents = ALL_AGENTS, listing, agentModel = agentM
 }
 const reply = (text, model) => ({ id: 'msg_a', type: 'assistant', agent: 'x', ...(model ? { model } : {}), content: [{ type: 'text', text }] });
 
-test('per-lens model: a registered agent creates the child AS that agent ON its model, charter still leads the prompt, still write-disabled', async () => {
+test("per-lens model: a registered agent supplies its MODEL only; the child is never created AS that repo-controlled agent, charter still leads the prompt, still write-disabled", async () => {
   const host = lensHost(() => reply('ok'));
   const ask = makeLensAsk(host.session, { agentApi: host.agentApi, directory: '/repo' });
   const text = await ask({ agent: 'prosecutor-security', system: 'LENS SYSTEM PROMPT', prompt: 'find bugs' });
   assert.equal(text, 'ok');
   const created = host.calls.creates[0];
-  assert.equal(created.agent, 'prosecutor-security');
+  // v2 `session.prompt` has no system override, so a child created AS the repo's
+  // agent would let that agent file outrank the packaged charter in the prompt.
+  assert.equal('agent' in created, false, 'not created as the repo-controlled agent');
   // OpenCode 2.x does not apply an agent's model to a plugin-created session
   // (live-verified), so the agent's configured model must be passed explicitly.
   assert.deepEqual(created.model, { providerID: 'vercel', id: 'vmc/adlc-prosecutor-security' }, "the agent's own model is passed");
@@ -115,11 +117,11 @@ test('per-lens model: a registered agent creates the child AS that agent ON its 
   assert.equal(host.calls.prompts[0].text, 'LENS SYSTEM PROMPT\n\n---\n\nfind bugs', 'the authoritative packaged charter is preserved');
 });
 
-test('per-lens model: an agent with no configured model is named but adds no model (session model applies)', async () => {
+test('per-lens model: an agent with no configured model adds no model (session model applies)', async () => {
   const host = lensHost(() => reply('ok'), { agentModel: () => null });
   const ask = makeLensAsk(host.session, { agentApi: host.agentApi });
   await ask({ agent: 'prosecutor-security', system: 'S', prompt: 'x' });
-  assert.equal(host.calls.creates[0].agent, 'prosecutor-security');
+  assert.equal('agent' in host.calls.creates[0], false);
   assert.equal('model' in host.calls.creates[0], false);
 });
 
@@ -184,7 +186,8 @@ test('per-lens model: the registered set is listed ONCE per ask, even across con
   const ask = makeLensAsk(host.session, { agentApi: host.agentApi });
   await Promise.all(ALL_AGENTS.map((agent) => ask({ agent, system: 'S', prompt: 'x' })));
   assert.equal(host.calls.listings, 1);
-  assert.deepEqual(host.calls.creates.map((c) => c.agent).sort(), [...ALL_AGENTS].sort());
+  assert.equal(host.calls.creates.length, ALL_AGENTS.length);
+  assert.ok(host.calls.creates.every((c) => !('agent' in c)), 'no child is created as a repo-controlled agent');
 });
 
 test('per-lens model: a failing lens model is NOT retried on the session model (no silent family switch)', async () => {

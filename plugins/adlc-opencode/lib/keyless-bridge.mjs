@@ -124,7 +124,7 @@ function toModelRef(model) {
  *
  * Methods are called ON `session` — the client's methods may read `this`.
  *
- * Per call, `agent` creates the child AS that agent and `model` runs it on that
+ * Per call, `agent` (when given) creates the child as that agent and `model` runs it on that
  * model (overriding the factory `model`). OpenCode does NOT apply an agent's
  * configured model to a plugin-created session, so a caller that wants the
  * agent's model must pass it. `onMessages` receives the child's messages before

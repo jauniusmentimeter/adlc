@@ -135,17 +135,18 @@ export async function listRegisteredAgents(agentApi, { directory, timeoutMs = AG
  * returns the reply text. Returns null when the session API is missing (caller
  * falls back to the prose protocol).
  *
- * A call whose `agent` is registered (`agentApi` = `ctx.agent`) creates the
- * child AS that agent and, when the agent configures a `model` (frontmatter or
- * `opencode.json` `agents.<id>.model`), passes that model explicitly: OpenCode
- * v2 does not apply an agent's model to a plugin-created session (verified
- * against the 2.0.23 binary — the child answered on the session model). The session's
- * permission rules are evaluated after the agent's, so the wildcard deny still
- * holds. v2 `session.prompt` has no system override, so the authoritative
- * packaged charter always leads the prompt text — a repo-controlled agent file
- * or version drift cannot replace the reviewer instructions. The registered
- * set is read once per ask. An unregistered agent is never named; its call runs
- * on the session model with the charter.
+ * A call whose `agent` is registered (`agentApi` = `ctx.agent`) runs on that
+ * agent's configured `model` (frontmatter or `opencode.json`
+ * `agents.<id>.model`), passed explicitly: OpenCode v2 does not apply an agent's
+ * model to a plugin-created session (verified against the 2.0.23 binary — the
+ * child answered on the session model). The child is deliberately NOT created AS
+ * that agent: v2 `session.prompt` has no system override, so the packaged
+ * charter can only lead the prompt text, and a repo-controlled agent file
+ * (`.opencode/agents/prosecutor-*.md`) would sit above it as a system prompt and
+ * could instruct the lens to report nothing. Only the agent's model is read from
+ * the repository; the session's wildcard-deny rules apply either way. The
+ * registered set is read once per ask. An unregistered agent runs on the session
+ * model with the charter.
  * `onResolved` is told which model answered each call, whether the agent's
  * config was used, and whether the agent listing succeeded at all
  * (`agentsListed: false` → every lens fell back because the host could not list
@@ -167,7 +168,6 @@ export function makeLensAsk(session, {
     const agentModel = asAgent ? agents.get(agent) : null;
     let answered = null;
     const text = await ask(system ? `${system}\n\n---\n\n${prompt}` : prompt, {
-      ...(asAgent ? { agent } : {}),
       ...(agentModel ? { model: agentModel } : {}),
       onMessages: (messages) => { answered = replyModel(messages); },
     });
