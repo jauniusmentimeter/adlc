@@ -134,6 +134,33 @@ test('LLM-backed gate + generate API → keyless via ctx.generate.text (not a CL
   assert.match(r.content, /SPEC IS CLEAR/);
 });
 
+test('keyless gate answers on the ACTIVE session model, not the host default', async () => {
+  const generate = mockGenerate('OK');
+  const asked = [];
+  const session = { get: async (req) => { asked.push(req); return { id: req.sessionID, model: { providerID: 'anthropic', id: 'claude-b', variant: 'high' } }; } };
+  const spawnImpl = () => ({ status: 0, stdout: 'audit this spec' });
+  const def = buildGateTool({ root: '/p', generate, session, spawnImpl });
+  await def.execute({ gate: 'spec-lint' }, { ...TOOL_CTX, sessionID: 'ses_active' });
+  assert.deepEqual(asked, [{ sessionID: 'ses_active' }]);
+  assert.deepEqual(generate.calls, [{ prompt: 'audit this spec', model: { providerID: 'anthropic', id: 'claude-b', variant: 'high' } }]);
+});
+
+test('keyless gate falls back to the host default model when the session lookup fails or hangs', async () => {
+  const spawnImpl = () => ({ status: 0, stdout: 'audit this spec' });
+  for (const session of [
+    { get: async () => { throw new Error('boom'); } },
+    { get: async () => ({ id: 'ses_active' }) },            // session without a model
+    { get: () => new Promise(() => {}) },                    // never answers
+    {},                                                      // no get() at all
+  ]) {
+    const generate = mockGenerate('OK');
+    const def = buildGateTool({ root: '/p', generate, session, spawnImpl, sessionLookupTimeoutMs: 20 });
+    const r = await def.execute({ gate: 'spec-lint' }, { ...TOOL_CTX, sessionID: 'ses_active' });
+    assert.equal(r.metadata.keyless, true);
+    assert.deepEqual(generate.calls, [{ prompt: 'audit this spec' }]);
+  }
+});
+
 test('LLM-backed gate but NO generate API → falls back to the CLI (no crash)', async () => {
   const spawnImpl = (_bin, args) => {
     // without --prompt-only this is the plain CLI path

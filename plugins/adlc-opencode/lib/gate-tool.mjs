@@ -8,7 +8,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { GATE_BINS } from '../gate-bins.mjs';
-import { runGateKeyless, makeAsk } from './keyless-bridge.mjs';
+import { runGateKeyless, makeAsk, withTimeout } from './keyless-bridge.mjs';
 
 const GATE_SET = new Set(GATE_BINS);
 
@@ -49,6 +49,25 @@ export const LLM_BACKED_GATES = new Set([
   'parallax', 'premortem', 'spec-lint', 'coldstart', 'consensus-fix',
   'lesson-foundry', 'rejection-mining', 'gate-fuzzing', 'review-calibration',
 ]);
+
+// Bound on resolving the calling session's model; a local server answers in ms.
+const SESSION_LOOKUP_TIMEOUT_MS = 5_000;
+
+/**
+ * The model the calling session is on, so a keyless gate answers on the model
+ * the user selected rather than the host default (a stateless `generate.text`
+ * has no session to inherit from). Undefined — host default — when it cannot be
+ * resolved: this is a preference, never a reason to fail the gate.
+ */
+async function activeSessionModel(session, sessionID, timeoutMs) {
+  if (!sessionID || typeof session?.get !== 'function') return undefined;
+  try {
+    const info = await withTimeout(Promise.resolve(session.get({ sessionID })), timeoutMs, 'adlc_gate: session lookup timed out');
+    return info?.model ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Validate + run a deterministic (non-LLM) ADLC gate as `adlc <gate> [args…]`.
@@ -109,8 +128,8 @@ export function runGate({ gate, args = [], spawnImpl = spawnSync, cwd = process.
  * they work inside OpenCode with no API key. Returns a structured result, or
  * null when the host has no generate API (caller falls back to the CLI).
  */
-export async function runGateKeyless2({ gate, args = [], generate, cwd = process.cwd(), spawnImpl }) {
-  const ask = makeAsk(generate);
+export async function runGateKeyless2({ gate, args = [], generate, model, cwd = process.cwd(), spawnImpl }) {
+  const ask = makeAsk(generate, { model });
   if (!ask) return null; // no generate API → let the caller fall back
   try {
     const { prompts, answers } = await runGateKeyless({
@@ -161,7 +180,7 @@ export const DIRECT_TOOL_OPTIONS = Object.freeze({ codemode: false });
  * CLI. v2 tool contexts carry no directory, so gates run in
  * `root`.
  */
-export function buildGateTool({ root = process.cwd(), generate, spawnImpl } = {}) {
+export function buildGateTool({ root = process.cwd(), generate, session, spawnImpl, sessionLookupTimeoutMs = SESSION_LOOKUP_TIMEOUT_MS } = {}) {
   return {
     name: 'adlc_gate',
     description:
@@ -182,13 +201,14 @@ export function buildGateTool({ root = process.cwd(), generate, spawnImpl } = {}
       additionalProperties: false,
     },
     options: DIRECT_TOOL_OPTIONS,
-    execute: async (a) => {
+    execute: async (a, context) => {
       const gate = String(a?.gate ?? '').trim();
       const args = Array.isArray(a?.args) ? a.args : [];
       let result = null;
       // LLM-backed gate + a usable generate API → run keyless through the host model.
       if (LLM_BACKED_GATES.has(gate) && generate) {
-        result = await runGateKeyless2({ gate, args, generate, cwd: root, spawnImpl });
+        const model = await activeSessionModel(session, context?.sessionID, sessionLookupTimeoutMs);
+        result = await runGateKeyless2({ gate, args, generate, model, cwd: root, spawnImpl });
       }
       // Deterministic gate, no generate API, or keyless unavailable → CLI.
       if (!result) {

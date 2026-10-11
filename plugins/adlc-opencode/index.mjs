@@ -461,7 +461,7 @@ async function setup(ctx = {}) {
   // never calls gates" — and must not cost the enforcement registered above.
   try {
     const tools = [
-      buildGateTool({ root, generate: ctx.generate }),
+      buildGateTool({ root, generate: ctx.generate, session: ctx.session }),
       buildProsecuteTool({ root, pkgRoot: PKG_ROOT, session: ctx.session, agent: ctx.agent }),
     ];
     await ctx.tool.transform((ed) => { for (const t of tools) ed.add(t); });

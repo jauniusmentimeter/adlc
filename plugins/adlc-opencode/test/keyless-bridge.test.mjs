@@ -178,6 +178,32 @@ test('makeSessionAsk: no permissions array → null (never an unrestricted child
   assert.equal(session.calls.create.length, 0, 'no child session was created');
 });
 
+test('makeSessionAsk: a reply timeout interrupts the child so it stops running in the background', async () => {
+  const session = mockSession();
+  const interrupted = [];
+  session.interrupt = async (req) => { interrupted.push(req); };
+  session.wait = () => new Promise(() => {});
+  await assert.rejects(() => makeSessionAsk(session, { title: 't', permissions: PERMS, timeoutMs: 20, label: 'lens' })('q'), /lens: child session reply timed out/);
+  assert.deepEqual(interrupted, [{ sessionID: 'ses_child' }]);
+});
+
+test('makeSessionAsk: a failing or missing interrupt never masks the timeout error', async () => {
+  for (const interrupt of [async () => { throw new Error('gone'); }, undefined]) {
+    const session = mockSession();
+    if (interrupt) session.interrupt = interrupt;
+    session.wait = () => new Promise(() => {});
+    await assert.rejects(() => makeSessionAsk(session, { title: 't', permissions: PERMS, timeoutMs: 20, label: 'lens' })('q'), /lens: child session reply timed out/);
+  }
+});
+
+test('makeSessionAsk: a successful reply is not interrupted', async () => {
+  const session = mockSession();
+  const interrupted = [];
+  session.interrupt = async (req) => { interrupted.push(req); };
+  await makeSessionAsk(session, { title: 't', permissions: PERMS })('q');
+  assert.deepEqual(interrupted, []);
+});
+
 test('makeSessionAsk: create without a session id rejects (never prompts an unknown session)', async () => {
   const session = mockSession();
   session.create = async () => ({});

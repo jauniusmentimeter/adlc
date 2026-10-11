@@ -150,11 +150,20 @@ export function makeSessionAsk(session, { title, permissions, directory, model, 
       timeoutMs, `${label}: child session.create timed out`);
     const sessionID = created?.id;
     if (!sessionID) throw new Error(`${label}: child session.create returned no session id`);
-    const messages = await withTimeout((async () => {
-      await session.prompt({ sessionID, text });
-      await session.wait({ sessionID });
-      return session.context({ sessionID });
-    })(), timeoutMs, `${label}: child session reply timed out`);
+    let messages;
+    try {
+      messages = await withTimeout((async () => {
+        await session.prompt({ sessionID, text });
+        await session.wait({ sessionID });
+        return session.context({ sessionID });
+      })(), timeoutMs, `${label}: child session reply timed out`);
+    } catch (err) {
+      // The parent has stopped waiting, but the child would keep running (and
+      // spending) in the host. Stopping it is best effort and never replaces the
+      // real failure.
+      try { await session.interrupt?.({ sessionID }); } catch { /* the original error is the one to report */ }
+      throw err;
+    }
     onMessages?.(messages);
     return answerFromMessages(messages);
   };
