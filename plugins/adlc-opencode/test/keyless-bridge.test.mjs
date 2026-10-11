@@ -248,6 +248,27 @@ test('makeSessionAsk: a successful reply is not interrupted', async () => {
   assert.deepEqual(interrupted, []);
 });
 
+test('makeSessionAsk: cancelling the parent interrupts the in-flight child and rejects', async () => {
+  const session = mockSession();
+  const interrupted = [];
+  session.interrupt = async (req) => { interrupted.push(req); };
+  session.wait = () => new Promise(() => {});
+  const parent = new AbortController();
+  const pending = makeSessionAsk(session, { title: 't', permissions: PERMS, timeoutMs: 60_000, label: 'lens', signal: parent.signal })('q');
+  await new Promise((r) => setImmediate(r));
+  parent.abort();
+  await assert.rejects(() => pending, /lens: cancelled/);
+  assert.deepEqual(interrupted, [{ sessionID: 'ses_child' }]);
+});
+
+test('makeSessionAsk: an already-cancelled parent creates no child at all', async () => {
+  const session = mockSession();
+  const parent = new AbortController();
+  parent.abort();
+  await assert.rejects(() => makeSessionAsk(session, { title: 't', permissions: PERMS, label: 'lens', signal: parent.signal })('q'), /lens: cancelled/);
+  assert.equal(session.calls.create.length, 0);
+});
+
 test('makeSessionAsk: create without a session id rejects (never prompts an unknown session)', async () => {
   const session = mockSession();
   session.create = async () => ({});

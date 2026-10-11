@@ -98,11 +98,24 @@ export function answerFromMessages(messages) {
 /** Per-child-prompt timeout — a hung provider must not hang the tool turn. */
 export const PROMPT_TIMEOUT_MS = 120_000;
 
-export function withTimeout(promise, ms, onTimeoutMessage) {
-  if (!ms || ms <= 0) return promise;
+export function withTimeout(promise, ms, onTimeoutMessage, { signal, cancelledMessage = onTimeoutMessage } = {}) {
+  if ((!ms || ms <= 0) && !signal) return promise;
   let timer;
-  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(onTimeoutMessage)), ms); });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  let onAbort;
+  // One race, one cleanup: whichever of the work, the timer or the abort wins,
+  // the timer and the listener are released, so an abandoned wait leaves nothing
+  // pending in the event loop.
+  const guards = new Promise((_, reject) => {
+    if (ms > 0) timer = setTimeout(() => reject(new Error(onTimeoutMessage)), ms);
+    if (signal) {
+      onAbort = () => reject(new Error(cancelledMessage));
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+  return Promise.race([promise, guards]).finally(() => {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  });
 }
 
 /** Bound on resolving the calling session's model; a local server answers in ms. */
@@ -149,7 +162,7 @@ function toModelRef(model) {
  * agent's model must pass it. `onMessages` receives the child's messages before
  * the answer is returned.
  */
-export function makeSessionAsk(session, { title, permissions, directory, model, timeoutMs = PROMPT_TIMEOUT_MS, label = 'keyless' } = {}) {
+export function makeSessionAsk(session, { title, permissions, directory, model, timeoutMs = PROMPT_TIMEOUT_MS, label = 'keyless', signal } = {}) {
   if (typeof session?.create !== 'function' || typeof session?.prompt !== 'function'
     || typeof session?.wait !== 'function' || typeof session?.context !== 'function') return null;
   // No rules would mean a child that keeps the agent's own (write-capable)
@@ -157,6 +170,7 @@ export function makeSessionAsk(session, { title, permissions, directory, model, 
   if (!Array.isArray(permissions)) return null;
   const modelRef = toModelRef(model);
   return async (text, { agent, model: callModel, onMessages } = {}) => {
+    if (signal?.aborted) throw new Error(`${label}: cancelled`);
     const ref = toModelRef(callModel) ?? modelRef;
     const created = await withTimeout(
       session.create({
@@ -166,7 +180,7 @@ export function makeSessionAsk(session, { title, permissions, directory, model, 
         ...(directory ? { location: { directory } } : {}),
         ...(ref ? { model: ref } : {}),
       }),
-      timeoutMs, `${label}: child session.create timed out`);
+      timeoutMs, `${label}: child session.create timed out`, { signal, cancelledMessage: `${label}: cancelled` });
     const sessionID = created?.id;
     if (!sessionID) throw new Error(`${label}: child session.create returned no session id`);
     let messages;
@@ -175,7 +189,7 @@ export function makeSessionAsk(session, { title, permissions, directory, model, 
         await session.prompt({ sessionID, text });
         await session.wait({ sessionID });
         return session.context({ sessionID });
-      })(), timeoutMs, `${label}: child session reply timed out`);
+      })(), timeoutMs, `${label}: child session reply timed out`, { signal, cancelledMessage: `${label}: cancelled` });
     } catch (err) {
       // The parent has stopped waiting, but the child would keep running (and
       // spending) in the host. Stopping it is best effort and never replaces the

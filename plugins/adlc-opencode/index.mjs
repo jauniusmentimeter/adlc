@@ -25,6 +25,7 @@ import { buildSystemContext, buildToolRailNotice, buildStatusLine } from './lib/
 import { createFlailTracker, flailMessage } from './lib/flail.mjs';
 import { buildGateTool } from './lib/gate-tool.mjs';
 import { buildProsecuteTool } from './lib/prosecute-tool.mjs';
+import { abortableSleep } from './lib/abortable-sleep.mjs';
 import { buildCompactionContext } from './lib/compaction.mjs';
 import { checkCommandOrder, checkCommandTamper } from './lib/command-gate.mjs';
 import { fileURLToPath } from 'node:url';
@@ -98,12 +99,6 @@ function resolveRoot(location) {
   return launch ?? project ?? process.cwd();
 }
 
-const sleep = (ms, signal) => new Promise((done) => {
-  if (signal.aborted) return done();
-  const timer = setTimeout(done, ms);
-  signal.addEventListener('abort', () => { clearTimeout(timer); done(); }, { once: true });
-});
-
 /**
  * Consume the server-wide event stream until `signal` aborts. A stream that
  * ends or throws is resubscribed with bounded backoff (100 ms doubling, capped
@@ -120,7 +115,7 @@ async function runEventLoop(event, signal, onEvent) {
       }
     } catch { /* stream failed — resubscribe below */ }
     if (signal.aborted) return;
-    await sleep(backoff, signal);
+    await abortableSleep(backoff, signal);
     backoff = Math.min(backoff * 2, RESUBSCRIBE_MAX_MS);
   }
 }

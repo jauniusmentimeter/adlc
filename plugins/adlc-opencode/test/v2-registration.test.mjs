@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { ensureDenyMarker } from '@adlc/context-handoff';
 
 import plugin from '../index.mjs';
+import { abortableSleep } from '../lib/abortable-sleep.mjs';
 import {
   loadPlugin, createFakeCtx, captureStderr,
   compactionEnded, filesystemChanged, sessionCreated, sessionIdle,
@@ -164,6 +165,17 @@ test('AC15: a failed enforcing registration fails setup (closed), a failed advis
   const { result: cleanup, lines } = await captureStderr(() => plugin.setup(advisory.ctx));
   cleanup();
   assert.ok(lines.some((l) => /^\[adlc\] warning: context hook NOT registered: no session:context/.test(l)), lines.join('\n'));
+});
+
+test('AC16b: the reconnect backoff leaves no abort listener behind once its timer fires', async () => {
+  const signal = new AbortController().signal;
+  let live = 0;
+  const add = signal.addEventListener.bind(signal);
+  const remove = signal.removeEventListener.bind(signal);
+  signal.addEventListener = (...a) => { live += 1; return add(...a); };
+  signal.removeEventListener = (...a) => { live -= 1; return remove(...a); };
+  for (let i = 0; i < 5; i += 1) await abortableSleep(1, signal);
+  assert.equal(live, 0, 'every listener was removed after a normal wake-up');
 });
 
 test('AC16: an ended event stream is resubscribed, and cleanup stops the loop', async (t) => {

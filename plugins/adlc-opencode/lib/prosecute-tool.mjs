@@ -127,7 +127,24 @@ export function buildProsecuteTool({ root = process.cwd(), pkgRoot, session, age
       // A child is not parent-linked in v2, so a lens with no registered agent
       // would otherwise answer on the host default instead of the caller's model.
       const model = await activeSessionModel(session, context?.sessionID, sessionLookupTimeoutMs);
-      const ask = makeLensAsk(session, { agentApi: agent, directory: root, model, onResolved: ledger.record });
+      // One controller for the whole run: aborted when the tool call is cancelled
+      // and in `finally`, so a failing lens cannot leave its concurrent siblings
+      // running (they are interrupted and stop launching new children).
+      const run = new AbortController();
+      const onCancel = () => run.abort();
+      if (context?.signal?.aborted) run.abort();
+      else context?.signal?.addEventListener('abort', onCancel, { once: true });
+      try {
+        return await prosecute(a, { model, ledger, run, base });
+      } finally {
+        run.abort();
+        context?.signal?.removeEventListener('abort', onCancel);
+      }
+    },
+  };
+
+  async function prosecute(a, { model, ledger, run, base }) {
+      const ask = makeLensAsk(session, { agentApi: agent, directory: root, model, signal: run.signal, onResolved: ledger.record });
       if (!ask) {
         return toToolResult({
           title: 'adlc_prosecute: no session API',
@@ -206,6 +223,5 @@ export function buildProsecuteTool({ root = process.cwd(), pkgRoot, session, age
           singleModel: reviewers.singleModel,
         },
       });
-    },
-  };
+  }
 }

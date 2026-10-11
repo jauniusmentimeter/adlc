@@ -153,10 +153,10 @@ export async function listRegisteredAgents(agentApi, { directory, timeoutMs = AG
  * agents, not because a lens agent is missing).
  */
 export function makeLensAsk(session, {
-  agentApi, directory, model, timeoutMs = PROMPT_TIMEOUT_MS, agentListTimeoutMs = AGENT_LIST_TIMEOUT_MS, onResolved,
+  agentApi, directory, model, timeoutMs = PROMPT_TIMEOUT_MS, agentListTimeoutMs = AGENT_LIST_TIMEOUT_MS, onResolved, signal,
 } = {}) {
   const ask = makeSessionAsk(session, {
-    title: 'adlc-prosecute', permissions: lensPermissions(), directory, model, timeoutMs, label: 'prosecute',
+    title: 'adlc-prosecute', permissions: lensPermissions(), directory, model, timeoutMs, label: 'prosecute', signal,
   });
   if (!ask) return null;
   let registered;

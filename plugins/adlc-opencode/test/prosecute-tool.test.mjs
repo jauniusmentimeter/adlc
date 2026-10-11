@@ -196,6 +196,43 @@ test('execute: an unresolvable calling-session model leaves children on the host
   }
 });
 
+test('execute: when one lens fails, its in-flight siblings are interrupted, not left running', async () => {
+  const session = mockSession(() => fenced([]));
+  const interrupted = [];
+  session.interrupt = async (req) => { interrupted.push(req.sessionID); };
+  let waits = 0;
+  session.wait = ({ sessionID }) => {
+    waits += 1;
+    // the first lens fails fast; every other child would run until its timeout
+    return waits === 1 ? Promise.reject(new Error('provider 503')) : new Promise(() => {});
+  };
+  const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: agentDomain(), diffImpl: () => 'diff x' });
+  const r = await def.execute({ base: 'main' }, TOOL_CTX);
+  assert.equal(r.metadata.error, 'prosecution-failed');
+  assert.ok(waits > 1, 'several lenses were in flight');
+  await new Promise((done) => setTimeout(done, 20)); // siblings clean up on their own rejection, just after execute returns
+  assert.equal(new Set(interrupted).size, waits, 'every child that was started was interrupted');
+});
+
+test('execute: cancelling the tool call stops the prosecution and interrupts the running children', async () => {
+  const session = mockSession(() => fenced([]));
+  const interrupted = [];
+  session.interrupt = async (req) => { interrupted.push(req.sessionID); };
+  session.wait = () => new Promise(() => {});
+  const parent = new AbortController();
+  const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: agentDomain(), diffImpl: () => 'diff x' });
+  const running = def.execute({ base: 'main' }, { ...TOOL_CTX, signal: parent.signal });
+  await new Promise((r) => setTimeout(r, 30));
+  const started = session.calls.creates.length;
+  assert.ok(started > 0);
+  parent.abort();
+  const r = await running;
+  assert.equal(r.metadata.error, 'prosecution-failed');
+  await new Promise((done) => setTimeout(done, 20));
+  assert.equal(interrupted.length, started, 'every running child was interrupted');
+  assert.equal(session.calls.creates.length, started, 'no new child was launched after the cancel');
+});
+
 test('execute: reviewers that all answer on one model are labelled single-model, not cross-model', async () => {
   const session = mockSession(() => fenced([]), () => ({ providerID: 'anthropic', id: 'claude-opus-5' }));
   const def = buildProsecuteTool({ root: '/p', pkgRoot: PKG, session, agent: { list: async () => ({ data: ALL_AGENTS.map((id) => ({ id, name: id })) }) }, diffImpl: () => 'diff x' });
