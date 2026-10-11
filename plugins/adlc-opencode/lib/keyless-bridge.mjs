@@ -133,6 +133,9 @@ function toModelRef(model) {
 export function makeSessionAsk(session, { title, permissions, directory, model, timeoutMs = PROMPT_TIMEOUT_MS, label = 'keyless' } = {}) {
   if (typeof session?.create !== 'function' || typeof session?.prompt !== 'function'
     || typeof session?.wait !== 'function' || typeof session?.context !== 'function') return null;
+  // No rules would mean a child that keeps the agent's own (write-capable)
+  // permissions, so a missing set is refused rather than defaulted.
+  if (!Array.isArray(permissions)) return null;
   const modelRef = toModelRef(model);
   return async (text, { agent, model: callModel, onMessages } = {}) => {
     const ref = toModelRef(callModel) ?? modelRef;

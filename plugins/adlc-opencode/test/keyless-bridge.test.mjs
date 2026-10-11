@@ -169,6 +169,15 @@ test('makeSessionAsk: missing any required session method → null (caller fails
   assert.equal(makeSessionAsk(null, { title: 't', permissions: PERMS }), null);
 });
 
+test('makeSessionAsk: no permissions array → null (never an unrestricted child; caller fails closed)', () => {
+  const session = mockSession();
+  for (const permissions of [undefined, null, 'allow-all', {}]) {
+    assert.equal(makeSessionAsk(session, { title: 't', permissions }), null, `permissions=${JSON.stringify(permissions)}`);
+  }
+  assert.equal(makeSessionAsk(session, { title: 't' }), null);
+  assert.equal(session.calls.create.length, 0, 'no child session was created');
+});
+
 test('makeSessionAsk: create without a session id rejects (never prompts an unknown session)', async () => {
   const session = mockSession();
   session.create = async () => ({});
