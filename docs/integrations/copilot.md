@@ -170,11 +170,28 @@ not re-implemented here):
 - **Hook stdin** ([appendix §2.1](./copilot-probe-appendix.md)): `pre/postToolUse`
   receives **camelCase** JSON — `toolName` (string), `toolArgs` (a **JSON
   string** that must be parsed), `cwd`, and for post `toolResult`. Not the
-  Claude-Code `{tool_name, tool_input}` snake_case shape.
+  Claude-Code `{tool_name, tool_input}` snake_case shape. The enforcing hooks
+  (rails-guard, build-gate) resolve the repository from that payload `cwd` and
+  fall back to the hook process's cwd only when the payload carries none.
 - **Load paths** ([appendix §4](./copilot-probe-appendix.md)): hooks from
   `.github/hooks/*.json`, plugin-bundled, and `~/.copilot/hooks/`; skills read
   `.github/skills/`, `.agents/skills/`, and **`.claude/skills/`** (confirms the
   byte-share open-standard claim).
+
+### Which `adlc` the hooks run
+
+The build-gate bypass recorder and audit steps run the first `adlc` on `PATH` that is:
+
+- reached through an absolute `PATH` entry outside any `node_modules`
+  directory, since a repository could place one there, and
+- owned by you, or (a `sudo npm i -g @adlc/cli` install) a root-owned file
+  reached through a root-owned `PATH` entry in a root-owned directory, with
+  neither the file nor any directory above it or above the `PATH` entry
+  writable by group or others.
+
+These are the same terms the Claude Code integration applies. A
+project-local install (`node_modules/.bin/adlc` only) is never run, and a
+bypass that needs an `adlc` to record it is refused when none qualifies.
 
 ## Formal ADLC Coverage
 

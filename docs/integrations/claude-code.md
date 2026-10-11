@@ -199,6 +199,25 @@ scope, and, for the unscoped `=1` form, stating plainly that it is session-wide
 and not revoked by deleting a settings file. A stale bypass is therefore seen,
 not silently in effect.
 
+### Which `adlc` the hooks run
+
+Preflight, flail detection, the Stop manifest check, the review notice and the
+two bypass recorders run the first `adlc` on `PATH` that is:
+
+- reached through an absolute `PATH` entry outside any `node_modules`
+  directory, since a repository could place one there, and
+- owned by you, or (a `sudo npm i -g @adlc/cli` install) a root-owned file
+  reached through a root-owned `PATH` entry in a root-owned directory, with
+  neither the file nor any directory above it or above the `PATH` entry
+  writable by group or others. A group-writable `/usr/local/bin` (`root:staff`
+  2775 on some older Debian systems) does not qualify.
+
+A project-local install (`node_modules/.bin/adlc` only) is never run. If
+`adlc` is on `PATH` but no copy qualifies, the session-start and Stop checks
+name the first copy found and why it was refused, flail detection says the same
+once per session, and a rails or build-gate bypass is refused with the same
+reason. Install `@adlc/cli` globally to fix it.
+
 ### MCP server
 
 The plugin bundles an MCP server (`plugins/adlc-claude-code/.mcp.json`,
@@ -293,6 +312,8 @@ Which tool to reach for:
 | Orphaned-unbound marker (`ticket_id: null`, `content_hash: null`) | `adlc handoff doctor --clear --write` |
 | One-off override needed for a bound deny | signed bypass grant (below) |
 | Stale plugin install still arming the gate | remove the old install; the current one does not wire it |
+
+**`incomplete_scan_lower_bound`** is a different deny from the band denies above. It fires when the hook's transcript scan did not reach start-of-file — the transcript exceeds the 8 MiB scan budget, the scan hit its wall-clock budget, or the file *shrank* while being read — while the observed tool-call depth is still below 30. A partial scan can only prove a lower bound on depth, and a lower bound below the handoff threshold cannot clear the call. It clears once depth reaches 30 or in a fresh session. A transcript that *grows* during a complete read (the normal case: the host appends on every turn) is a complete read and does not trigger it.
 
 **There is no environment kill switch, by design.** There is no `ADLC_HANDOFF_BYPASS` and no `ADLC_HANDOFF_ENFORCEMENT` — grepping for one will not find it. This deliberately differs from `ADLC_RAILS_BYPASS`: the only override is a **signed one-shot grant** at `.adlc/handoffs/<session>.bypass-grant.json` (HMAC-SHA256, requires `ADLC_MANIFEST_KEY`), so a bypass cannot be handed out by an agent that can only set environment variables.
 

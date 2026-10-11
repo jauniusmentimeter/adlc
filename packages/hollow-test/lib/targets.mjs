@@ -417,6 +417,40 @@ export function fileChangeIsCommentOnly({ oldSource, newSource, added, deleted }
   return JSON.stringify(before.projection) === JSON.stringify(after.projection);
 }
 
+/**
+ * A dotted three-part version that is a whole string between matching single or
+ * double quotes (`'1.12.0'`). A range (`'^1.12.0'`), a prerelease
+ * (`'1.12.0-rc'`), a longer dotted token, a bare number, mismatched quotes and a
+ * template literal (which can interpolate) are not versions here. split() keeps
+ * both capture groups, so every third part (index 2, 5, ...) is a version and
+ * the part before it is its quote.
+ */
+const VERSION_LITERAL_RE = /(['"])(\d+\.\d+\.\d+)\1/;
+const VERSION_RE = /^\d+\.\d+\.\d+$/;
+
+/**
+ * True when the only difference between two sources is the release bump: every
+ * version literal that changed went from `fromVersion` to `toVersion` (the
+ * project's version at the base and at HEAD), and nothing else changed. That
+ * is a lockstep release rewriting a generated file, with no behaviour a mutant
+ * could exercise, so the caller reports the file as not covered. Every doubt
+ * answers false: no release in the diff, identical sources, a non-string side,
+ * a literal moving to any other value, and any change outside a literal.
+ *
+ * @param {{ oldSource: unknown, newSource: unknown, fromVersion: unknown, toVersion: unknown }} sides
+ * @returns {boolean}
+ */
+export function fileChangeIsVersionOnly({ oldSource, newSource, fromVersion, toVersion }) {
+  if (typeof oldSource !== 'string' || typeof newSource !== 'string') return false;
+  if (!VERSION_RE.test(String(fromVersion)) || !VERSION_RE.test(String(toVersion))) return false;
+  if (fromVersion === toVersion || oldSource === newSource) return false;
+  const before = oldSource.split(VERSION_LITERAL_RE);
+  const after = newSource.split(VERSION_LITERAL_RE);
+  if (before.length !== after.length) return false;
+  return before.every((part, i) => part === after[i]
+    || (i % 3 === 2 && part === fromVersion && after[i] === toVersion));
+}
+
 export function filterTargetFiles(changedLines, { testGlobs = [], sourceGlobs = [] } = {}) {
   return Object.keys(changedLines).filter((f) => isMutableSource(f, { testGlobs, sourceGlobs }));
 }

@@ -173,10 +173,11 @@ const ADLC_CLI_TIMEOUT_MS = 5000;
 
 /**
  * Run the toolkit CLI. A repository can plant node_modules/.bin/adlc ahead of
- * the real install, so adlc is resolved with resolveTrustedBinary (node_modules
- * entries skipped, a regular file this user owns) and the signing keys reach it
- * only when `keyed` — the calls that sign or verify the manifest. Returns null
- * when no trusted adlc exists or it could not be started.
+ * the real install, so adlc is resolved with resolveTrustedBinary (relative and
+ * node_modules entries skipped; a file this user owns, or a root install that
+ * passes ownershipRejection) and the signing keys reach it only when `keyed` —
+ * the calls that sign or verify the manifest. Returns null when no trusted adlc
+ * exists or it could not be started; untrustedBinaryReason tells those apart.
  */
 function runAdlc(args, { keyed = false } = {}) {
   const candidate = resolveTrustedBinary('adlc', process.env.PATH);
@@ -419,7 +420,8 @@ function context(input) {
 function preflight() {
   if (!existsSync('.adlc')) return; // not an ADLC repo
   const r = runAdlc(['preflight', '--json']);
-  if (!r || !r.stdout) return; // toolkit absent / no output
+  if (!r) return emitUntrustedAdlc('preflight', 'SessionStart');
+  if (!r.stdout) return; // no output
   const res = parseJson(r.stdout);
   if (!res) return;
   const failed = res.failedNames ?? [];
@@ -562,7 +564,8 @@ function flail(input) {
       /* best-effort cleanup */
     }
   }
-  if (!r || !r.stdout) return;
+  if (!r) return emitUntrustedAdlcOncePerSession('flail-detector', 'PostToolUse', tp);
+  if (!r.stdout) return;
   const res = parseJson(r.stdout);
   if (!res || res.verdict !== 'flail') return;
 
@@ -610,7 +613,8 @@ function flail(input) {
 function manifest() {
   if (!existsSync(join('.adlc', 'manifest.jsonl'))) return; // nothing recorded yet
   const r = runAdlc(['gate-manifest', 'verify', '--json', '--allow-legacy-unsigned'], { keyed: true });
-  if (!r || !r.stdout) return;
+  if (!r) return emitUntrustedAdlc('gate-manifest verify');
+  if (!r.stdout) return;
   const res = parseJson(r.stdout);
   if (!res || res.valid) return; // intact → silent
   const msg =
@@ -1218,7 +1222,7 @@ function rails(input) {
       }
       return denyRail(
         `ADLC_RAILS_BYPASS is set but the override could not be recorded to the gate-manifest ` +
-          `(is @adlc/cli installed and .adlc writable?). An unaudited bypass is refused — the edit is blocked.`
+          `(${adlcUnavailableCause()}). An unaudited bypass is refused — the edit is blocked.`
       );
     }
     return denyRail(denyReason);
@@ -1397,7 +1401,7 @@ function rails(input) {
     if (!allRecorded) {
       return denyRail(
         `ADLC_RAILS_BYPASS is set but a rail override could not be recorded to the gate-manifest ` +
-          `(is @adlc/cli installed and .adlc writable?). An unaudited bypass is refused — the edit is blocked.`
+          `(${adlcUnavailableCause()}). An unaudited bypass is refused — the edit is blocked.`
       );
     }
     emitBypassNotice(hits.map((h) => h.rel)); // observable (#204 AC3)
@@ -1691,7 +1695,7 @@ function buildgate(input) {
     if (recordBuildGateBypass(active.id, signals, depth, sessionBytes)) return; // audited → allow
     return denyBuildGate(
       `ADLC_BUILD_GATE_BYPASS is set but the override could not be recorded to the gate-manifest ` +
-        `(is @adlc/cli installed and .adlc writable?). An unaudited bypass is refused — the build is blocked.`
+        `(${adlcUnavailableCause()}). An unaudited bypass is refused — the build is blocked.`
     );
   }
 
@@ -1871,16 +1875,53 @@ export function boundedHandoffRead(path, { maxBytes, deadlineMs }) {
   }
   const bytes = result.stdout.subarray(newlineIdx + 1);
   if (bytes.length !== readSoFar) return null; // truncated/garbled transport — do not trust a mismatched frame
-  const length = Math.min(size, maxBytes);
-  const truncatedByBytes = length < size;
-  // Same three incompleteness signals as before, now sourced from the
-  // worker's report instead of computed in-process.
-  const shortRead = readSoFar < length;
-  const grewOrShrank = postSize !== size;
+  const { truncated, grew } = readOutcomeFromHeader({ size, postSize, readSoFar }, maxBytes);
   return {
     size,
     text: bytes.toString('utf8'),
-    truncated: truncatedByBytes || shortRead || grewOrShrank,
+    truncated,
+    grew,
+  };
+}
+
+/**
+ * Map the worker's header frame to the three incompleteness signals, their
+ * disjunction, and the separate growth signal. Pure: no I/O, no mutation of
+ * `header`.
+ *
+ * `shrank` is `postSize < size`, a SHRINK only. A file that GREW after the
+ * read was taken is still a complete read of everything that existed when
+ * the read began: the worker read `length = min(size, maxBytes)` bytes from
+ * `size - length`, so when `length === size` it read from byte 0 and a later
+ * append cannot have hidden an earlier record. Treating growth as truncation
+ * (issue #797) produced a spurious `incomplete_scan_lower_bound` deny in the
+ * first tool calls of a session — exactly when the transcript is appended to
+ * on every turn and depth is still below HANDOFF_DEPTH.
+ *
+ * `grew` (`postSize > size`) is reported on its own because the two callers
+ * need opposite things from it. For the handoff DEPTH count growth is
+ * harmless: unseen later records can only raise a count that is already a
+ * valid lower bound. For `repoManifestChainIsSigned` growth is NOT harmless:
+ * it asks whether the manifest holds ANY signed entry right now, and an entry
+ * appended between the worker's two fstats is exactly what the returned text
+ * omits — so that caller must keep treating growth as inconclusive.
+ * @param {{ size: number, postSize: number, readSoFar: number }} header
+ * @param {number} maxBytes
+ * @returns {{ length: number, truncatedByBytes: boolean, shortRead: boolean, shrank: boolean, grew: boolean, truncated: boolean }}
+ */
+export function readOutcomeFromHeader({ size, postSize, readSoFar }, maxBytes) {
+  const length = Math.min(size, maxBytes);
+  const truncatedByBytes = length < size;
+  const shortRead = readSoFar < length;
+  const shrank = postSize < size;
+  const grew = postSize > size;
+  return {
+    length,
+    truncatedByBytes,
+    shortRead,
+    shrank,
+    grew,
+    truncated: truncatedByBytes || shortRead || shrank,
   };
 }
 
@@ -1969,13 +2010,12 @@ function scrubHandoffSecrets(env = process.env) {
  * repository can ship that shim itself. Every PATH entry that resolves
  * inside a `node_modules` directory is skipped for that reason (a genuine
  * global install is never itself inside `node_modules`), and every
- * remaining candidate must also be owned by the CURRENT process's uid
- * (skipped otherwise, platforms where `process.getuid` exists) — a
- * project-writable or shared directory earlier on PATH can still contain a
- * file owned by this same user, which this check cannot distinguish from a
- * genuine install, but it does rule out a candidate owned by a different
- * (or root/system) account landing on PATH ahead of the real binary. Given
- * that, this function still cannot verify a same-uid candidate's symlink
+ * remaining candidate must pass `ownershipRejection` (platforms where
+ * `process.getuid` exists) — a project-writable or shared directory earlier
+ * on PATH can still contain a file owned by this same user, which this check
+ * cannot distinguish from a genuine install, but it does rule out a candidate
+ * owned by another non-root account, or a root-owned program reached through
+ * a link or directory root does not control. Given that, this function still cannot verify a same-uid candidate's symlink
  * target or content. `recordRecoveryUnderBand` does not hand this spawn the
  * manifest signing key or the admin key regardless of what runs here, and
  * `repoManifestChainIsSigned` refuses to spawn it at all once the manifest
@@ -1986,23 +2026,148 @@ function scrubHandoffSecrets(env = process.env) {
  * is then skipped, best-effort) rather than guess.
  */
 export function resolveTrustedBinary(name, pathEnv) {
-  if (typeof pathEnv !== 'string' || pathEnv.length === 0) return null;
-  const sep = process.platform === 'win32' ? ';' : ':';
-  const selfUid = typeof process.getuid === 'function' ? process.getuid() : null;
-  for (const dir of pathEnv.split(sep)) {
-    if (!dir) continue;
-    if (dir.includes('node_modules')) continue; // see the function comment
-    const candidate = join(dir, name);
-    try {
-      const st = statSync(candidate);
-      if (!st.isFile()) continue;
-      if (selfUid !== null && st.uid !== selfUid) continue; // see the function comment
-      return candidate;
-    } catch {
-      /* try next PATH entry */
-    }
+  for (const { candidate, rejection } of binaryCandidates(name, pathEnv)) {
+    if (rejection === null) return candidate;
   }
   return null;
+}
+
+/**
+ * Why a stat'ed candidate may not run, or null when it may. Accepted: a file this
+ * user owns, or a `sudo npm i -g` install, where the file, the PATH entry naming
+ * it (`link`, from lstat) and the directory holding that entry are all owned by
+ * root, and neither the file nor the directory is writable by group or others.
+ * Only root can create root-owned entries, so a symlink someone else planted,
+ * pointing at a root-owned program such as /bin/sh, is still refused: the link
+ * itself is not root's. A symlink's own mode bits are always 0777 and never
+ * consulted; the directory decides who can replace it. `ancestors` are the
+ * directories above the real file and above the PATH directory, up to `/`:
+ * another account able to write any of them could swap what runs.
+ */
+export function ownershipRejection({ file, link, dir, ancestors = [] }, selfUid) {
+  if (file.uid === selfUid) return null;
+  if (file.uid !== 0) return `it is owned by uid ${file.uid}, not by you or by root`;
+  const locked = (st) => st.uid === 0 && (st.mode & 0o022) === 0;
+  if (!locked(file)) return 'it is root-owned but writable by group or others';
+  const isSymlink = (link.mode & 0o170000) === 0o120000;
+  if (link.uid !== 0 || (!isSymlink && !locked(link))) return 'it is reached through a link that root does not own';
+  if (!locked(dir)) return 'its directory is not root-owned or is writable by group or others';
+  if (!ancestors.every(locked)) return 'a directory above it is not root-owned or is writable by group or others';
+  return null;
+}
+
+/** The directories above `file`, nearest first, up to and including the filesystem root. */
+export function ancestorDirs(file) {
+  const out = [];
+  for (let d = dirname(file); ; d = dirname(d)) {
+    out.push(d);
+    if (dirname(d) === d) return out;
+  }
+}
+
+/** The directories whose writers could swap what `candidate` runs: those above its real file and above the real PATH entry. */
+export function candidateAncestors(candidate, dir, name) {
+  return [...ancestorDirs(realpathSync(candidate)), ...ancestorDirs(join(realpathSync(dir), name))];
+}
+
+/** Every `name` file on PATH in order, each with its rejection reason (null when trusted). Never runs one. */
+function binaryCandidates(name, pathEnv) {
+  if (typeof pathEnv !== 'string' || pathEnv.length === 0) return [];
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const selfUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const out = [];
+  for (const dir of pathEnv.split(sep)) {
+    if (!dir) continue;
+    const candidate = join(dir, name);
+    let file;
+    try {
+      file = statSync(candidate);
+    } catch {
+      continue; // no file here: try next PATH entry
+    }
+    if (!file.isFile()) continue;
+    let stats = null;
+    try {
+      stats = candidateStats(candidate, dir, name, file, selfUid);
+    } catch {
+      /* refused below as uninspectable */
+    }
+    out.push({ candidate, rejection: candidateRejection(dir, stats, selfUid) });
+  }
+  return out;
+}
+
+/**
+ * What ownershipRejection judges for an existing `candidate`: the followed file,
+ * the PATH entry itself (lstat), its directory, and, for a root-owned file this
+ * user does not own, every directory above the real file and the real PATH entry.
+ * Throws when any of them cannot be stat'ed.
+ */
+export function candidateStats(candidate, dir, name, file, selfUid) {
+  const stats = { file, link: lstatSync(candidate), dir: statSync(dir) };
+  if (file.uid === 0 && file.uid !== selfUid) {
+    stats.ancestors = candidateAncestors(candidate, dir, name).map((d) => statSync(d));
+  }
+  return stats;
+}
+
+/**
+ * Why the candidate found in PATH entry `dir` may not run (null when it may).
+ * Where it was found is judged first, so a repository-controlled location is
+ * named even when its stats are missing; `stats` is null when they could not
+ * be gathered.
+ */
+export function candidateRejection(dir, stats, selfUid) {
+  if (!isAbsolute(dir)) return 'it is reached through a relative PATH entry, which resolves inside the repository';
+  if (dir.includes('node_modules')) return 'it is inside node_modules, where a repository could have placed it';
+  if (stats === null) return 'its link or a directory above it could not be inspected';
+  return selfUid === null ? null : ownershipRejection(stats, selfUid);
+}
+
+/**
+ * Why no trusted `name` resolved although PATH holds one, as a sentence naming the
+ * first refused candidate. Null when a trusted one resolves (its failure is not a
+ * refusal) and when PATH holds none (an absent toolkit stays silent).
+ */
+export function untrustedBinaryReason(name, pathEnv) {
+  const all = binaryCandidates(name, pathEnv);
+  if (all.length === 0 || all.some((c) => c.rejection === null)) return null;
+  const { candidate, rejection } = all[0];
+  return `${JSON.stringify(candidate)} was not run because ${rejection}. Install @adlc/cli globally (npm i -g @adlc/cli) as yourself or as root.`;
+}
+
+/** The refused-adlc reason, or the generic cause when none applies. */
+function adlcUnavailableCause() {
+  return untrustedBinaryReason('adlc', process.env.PATH) ?? 'is @adlc/cli installed and .adlc writable?';
+}
+
+/** Say why adlc-backed `check` did not run when an adlc exists on PATH but every one was refused. */
+function emitUntrustedAdlc(check, eventName) {
+  const reason = untrustedBinaryReason('adlc', process.env.PATH);
+  if (!reason) return;
+  const msg = `ADLC ${check} did not run: ${reason}`;
+  emit(eventName
+    ? { hookSpecificOutput: { hookEventName: eventName, additionalContext: msg }, systemMessage: msg }
+    : { systemMessage: msg });
+}
+
+/**
+ * emitUntrustedAdlc for a check that runs after every tool call: at most once per
+ * session (`sessionKey`, the transcript path). The marker is created exclusively
+ * in privateStateDir, so of two concurrent calls only one reports; with no
+ * private state dir nothing is reported, since every call would repeat it.
+ */
+function emitUntrustedAdlcOncePerSession(check, eventName, sessionKey) {
+  if (!untrustedBinaryReason('adlc', process.env.PATH)) return;
+  const base = privateStateDir();
+  if (!base) return;
+  const key = createHash('sha1').update(sessionKey).digest('hex');
+  try {
+    writeFileSync(join(base, `untrusted-adlc-${key}.state`), '', { flag: 'wx' });
+  } catch {
+    return; // already reported this session, or the marker cannot be written
+  }
+  emitUntrustedAdlc(check, eventName);
 }
 
 /** Bounds for `repoManifestChainIsSigned` — see that function's comment for why. */
@@ -2123,7 +2288,11 @@ export function repoManifestChainIsSigned(repoRoot) {
       maxBytes: MANIFEST_SCAN_MAX_BYTES_PER_FILE,
       deadlineMs: Math.max(1, MANIFEST_SCAN_DEADLINE_MS - (Date.now() - startMs)),
     });
-    if (result == null || result.truncated) return true; // unreadable or incomplete -> can't prove unsigned -> treat as signed
+    // Unreadable, incomplete, OR GROWN -> can't prove unsigned -> treat as signed.
+    // Growth is complete enough for the transcript depth count, but not here:
+    // an entry appended between the worker's two fstats is exactly what this
+    // text omits, and it may be the signed one. Fail closed, as before #797.
+    if (result == null || result.truncated || result.grew) return true;
     for (const line of result.text.split('\n')) {
       if (!line.trim()) continue;
       let entry;

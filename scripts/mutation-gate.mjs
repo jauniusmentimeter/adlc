@@ -70,6 +70,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isMutableSource } from '../packages/hollow-test/lib/targets.mjs';
+import { spawnTrial, withHeapCapHint } from '../packages/hollow-test/lib/runner.mjs';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -212,6 +213,30 @@ export function testTargetFor(file, root = ROOT) {
 // so the project declares it — mirrored into the hollow-test invocation below as
 // --source-glob, so the wrapper and the tool agree.
 export const SOURCE_GLOBS = ['**/hollow-test.mjs', '**/spec-lint.mjs'];
+
+/**
+ * Generated files that scripts/release.mjs rewrites on every lockstep bump. A
+ * release changes only their version stamps, which no mutant can exercise, so
+ * hollow-test reports them as not covered instead of refusing the release. Only
+ * the files listed here qualify; adding one is a change to this gate.
+ */
+export const GENERATED_VERSION_FILES = [
+  'plugins/adlc-cursor/bin/adlc-mcp-wrapper.bundle.mjs',
+  'plugins/adlc-cursor/lib/mcp-build-metadata.mjs',
+];
+
+/**
+ * The wrapper's file declarations, mirrored into hollow-test so the two cannot
+ * disagree: the ambiguous product names (SOURCE_GLOBS) and the generated files
+ * a release rewrites (GENERATED_VERSION_FILES).
+ * @returns {string[]}
+ */
+export function declarationArgs() {
+  return [
+    ...SOURCE_GLOBS.flatMap((g) => ['--source-glob', g]),
+    ...GENERATED_VERSION_FILES.flatMap((f) => ['--generated', f]),
+  ];
+}
 
 export function hollowTestWouldMutate(file) {
   return isMutableSource(file, { sourceGlobs: SOURCE_GLOBS });
@@ -368,11 +393,35 @@ export function mutantBudget(decision, { runMs = null, windowMs = HOLLOW_WINDOW_
  * so the draw can be sized to what actually fits. A red run is the gate's own baseline
  * failure, reported with the suite's output before any mutant is drawn.
  */
-export function measureRun(testCmd, { spawn = spawnSync, now = Date.now, cwd = ROOT, timeoutMs = FAST_RUN_TIMEOUT_MS } = {}) {
+/**
+ * The baseline measurement launches exactly the way hollow-test's own trials
+ * do, through runner.mjs's spawnTrial (watchdog, heap cap, report). spawnSync's timeout signals its direct child only,
+ * and with a bare `shell: true` that child is /bin/sh — `node --test` and its
+ * workers kept running after this measurement timed out, the same orphan
+ * class the 2026-10-08 incident was made of, on every `npm run preflight`.
+ * Injectable: the tests hand in a fake with the same (cmd, args, opts) shape.
+ */
+function spawnThroughWatchdog(testCmd, _args, { cwd, timeout }) {
+  // hollow-test's own launch path, so this measurement and the trials it sizes
+  // have identical settings (watchdog, heap cap, report, pipes, and the trial's
+  // own maxBuffer — a verbose suite must not die of ENOBUFS here and run fine
+  // under hollow-test).
+  const r = spawnTrial(testCmd, { cwd, timeoutMs: timeout });
+  // A node that died at the cap gets the knob named here as well, not only in a trial.
+  return { ...r, stderr: withHeapCapHint({ stderr: r.stderr }, r.hollowCap).stderr };
+}
+
+export function measureRun(testCmd, { spawn = spawnThroughWatchdog, now = Date.now, cwd = ROOT, timeoutMs = FAST_RUN_TIMEOUT_MS } = {}) {
   const t0 = now();
   const r = spawn(testCmd, [], { shell: true, cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
   const runMs = Math.max(1, now() - t0);
   const output = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  // A real timeout arrives as error ETIMEDOUT (with the SIGTERM spawnSync sent).
+  // Every other error — ENOENT, EAGAIN/ENOMEM on a starved host, ENOBUFS — is a
+  // launch that did not happen, and must never read as "the suite ran and was
+  // killed": that false signal is exactly what runner.mjs's classifyTestResult
+  // was split out to prevent.
+  if (r.error?.code === 'ETIMEDOUT') return { ok: false, runMs, output, reason: `the fast target command timed out (${timeoutMs} ms) or was killed by ${r.signal ?? 'a signal'}` };
   if (r.error) return { ok: false, runMs, output, reason: `could not run the fast target command: ${r.error.message}` };
   if (r.signal || r.status == null) return { ok: false, runMs, output, reason: `the fast target command timed out (${timeoutMs} ms) or was killed by ${r.signal ?? 'a signal'}` };
   if (r.status !== 0) return { ok: false, runMs, output, reason: `the fast target command exited ${r.status}` };
@@ -469,9 +518,7 @@ export function main() {
     // the cap was printed above; the run is bounded either way.
     '--max', String(budget.draw),
     '--timeout-ms', String(decision.kind === 'fast' ? FAST_RUN_TIMEOUT_MS : SLOW_RUN_TIMEOUT_MS),
-    // Mirror the wrapper's own source declaration into the tool, so the two
-    // cannot disagree about the ambiguous product names (see SOURCE_GLOBS).
-    ...SOURCE_GLOBS.flatMap((g) => ['--source-glob', g]),
+    ...declarationArgs(),
   ], { stdio: 'inherit', cwd: ROOT, timeout: HOLLOW_WINDOW_MS + 60_000 });
 
   if (result.error) fail(`could not run hollow-test: ${result.error.message}`);

@@ -42,9 +42,10 @@ function withTempSpec(contents, fn) {
 }
 
 test('registry exposes the suite tools and omits internal packages', () => {
-  // 31 as of backlog-groom's registration — bump deliberately when a tool is
+  // 32 as of decision's registration — bump deliberately when a tool is
   // intentionally added/removed from the registry.
-  assert.equal(TOOLS.length, 31);
+  assert.equal(TOOLS.length, 32);
+  assert.equal(isTool('decision'), true);
   assert.equal(isTool('autopilot'), true);
   assert.equal(isTool('backlog-groom'), true);
   assert.equal(isTool('spec-lint'), true);
@@ -108,6 +109,16 @@ test('umbrella package declares both local ticket and external-sync dispatch tar
   assert.equal(pkg.dependencies['@adlc/ticket-sync'], pkg.version);
   assert.equal(pkg.dependencies['@adlc/init'], pkg.version);
   assert.equal(pkg.dependencies['@adlc/fleet'], pkg.version);
+});
+
+// A workspace checkout resolves every package through the hoisted node_modules, so a
+// verb whose package @adlc/cli does not depend on passes every local test and fails on
+// a real `npm i -g @adlc/cli`.
+test('umbrella package depends on the package behind every routed verb', () => {
+  const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
+  for (const tool of TOOLS.filter((t) => !t.external)) {
+    assert.equal(pkg.dependencies[tool.packageName], pkg.version, `${tool.name} routes to ${tool.packageName}`);
+  }
 });
 
 test('external verbs like "review" have no local bin to resolve (they are npx passthroughs)', () => {

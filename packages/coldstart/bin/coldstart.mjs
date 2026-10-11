@@ -13,7 +13,7 @@ import {
 } from '@adlc/core';
 
 import { buildPrompt, SYSTEM_PROMPT } from '../lib/prompt.mjs';
-import { checkAll, resolveExpectedModel, checkAllOffline } from '../lib/gate.mjs';
+import { checkAll, resolveExpectedModel, checkAllOffline, oversizeGap, cacheLookupState, isMockSeamActive } from '../lib/gate.mjs';
 import { buildRecordPlan } from '../lib/cache.mjs';
 import { renderReport, buildJsonOutput, allPass } from '../lib/report.mjs';
 import { USAGE, OPTIONS, parseMaxAgeDays } from '../lib/cli-options.mjs';
@@ -87,6 +87,18 @@ if (runAll) {
 // ── --prompt-only: print prompts and exit 0 ──────────────────────────────────
 
 if (promptOnlyMode) {
+  // The printed prompt carries at most TICKET_TEXT_MAX_CHARS of the ticket,
+  // and --record-verdict stores the answer against the FULL ticket's hash. For
+  // an over-cap ticket that answer would certify acceptance criteria nobody
+  // read, so no prompt is emitted and nothing is recorded: fail closed, name
+  // the offender, and let the operator split it.
+  const oversized = targets.map((t) => [t.id, oversizeGap(t)]).filter(([, gap]) => gap);
+  if (oversized.length > 0) {
+    for (const [id, gap] of oversized) console.error(`coldstart: ${id}: ${gap.what} — ${gap.why_blocking}`);
+    console.error('coldstart: no prompt emitted and no verdict recorded for an over-cap ticket');
+    process.exit(2);
+  }
+
   const prompts = targets.map(
     (t) => `=== system ===\n${SYSTEM_PROMPT}\n\n=== user (${t.id}) ===\n${buildPrompt(t)}`
   );
@@ -131,8 +143,13 @@ if (offlineMode) {
 
 // ── Verify provider is available for real runs ───────────────────────────────
 
-const provider = detectProvider();
-if (!provider) {
+// An over-cap ticket's verdict needs no model (checkAll decides it without
+// one), so when every target is over cap the missing-key error would only
+// hide the real instruction: split the ticket. Any in-cap target still needs
+// a provider.
+const everyTargetOversize = targets.every((t) => oversizeGap(t));
+const provider = everyTargetOversize ? null : detectProvider();
+if (!provider && !everyTargetOversize) {
   opError(
     'no LLM provider configured — set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY\n' +
     '(or use --offline / --prompt-only to run without calling an LLM)'
@@ -143,15 +160,35 @@ if (!provider) {
 // Content-addressed caching (issue #278): a ticket whose hash matches a
 // prior gate-manifest entry for the SAME resolved model, recorded within
 // --max-age days, is served from that entry — no LLM call. --force bypasses.
+// A cached verdict is honoured only from an entry whose signature verifies
+// under ADLC_MANIFEST_KEY (issue #595): the ledger is committed repo content,
+// so an unsigned or forged line must not be able to green the gate. With no
+// key the cache is not consulted and every target is re-audited — said once
+// on stderr so a slower run is not mistaken for a reviewer problem.
+
+const key = getKey();
+const expectedModel = resolveExpectedModel(tier);
+if (cacheLookupState({ force, model: expectedModel, key, mockSeamActive: isMockSeamActive() }) === 'no-key') {
+  console.error('coldstart: ADLC_MANIFEST_KEY is not set — cached verdicts are not trusted; re-auditing');
+}
 
 let results;
 try {
-  results = await checkAll(targets, tier, { force, maxAgeMs, dir: undefined });
+  results = await checkAll(targets, tier, { force, maxAgeMs, dir: undefined, key });
 } catch (err) {
   // Covers provider/network failures AND an unreadable verdict (issue #594 —
   // `coldstart: unreadable executability verdict — …`): both mean the audit
   // did not produce a verdict, so neither may read as a pass.
   opError(`could not obtain an executability verdict: ${err.message}`);
+}
+
+// The count is an operator notice on stderr only. stdout — the human report and
+// the `--json` document — keeps the field set lib/report.mjs defines (id, pass,
+// gaps, cached, offline); `cacheSkipped` is a property of checkAll's results for
+// library callers, not part of the CLI's structured output contract.
+const skippedLines = results.reduce((sum, r) => sum + r.cacheSkipped, 0);
+if (skippedLines > 0) {
+  console.error(`coldstart: ${skippedLines} unreadable manifest line(s) were skipped while reading the verdict cache`);
 }
 
 // ── Record usage + cache evidence (issues #272, #278) ───────────────────────
@@ -165,8 +202,8 @@ try {
 // anything to record?" branch here to leave untested.
 
 const { record } = await import('@adlc/gate-manifest/lib/record.mjs');
-const recordPlan = buildRecordPlan(results, targets, { model: resolveExpectedModel(tier), tier });
-for (const entry of recordPlan) record({ ...entry, key: getKey() });
+const recordPlan = buildRecordPlan(results, targets, { model: expectedModel, tier });
+for (const entry of recordPlan) record({ ...entry, key });
 
 // ── Output ───────────────────────────────────────────────────────────────────
 

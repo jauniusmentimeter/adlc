@@ -37,7 +37,7 @@
 
 import { existsSync, readFileSync, openSync, fstatSync, readSync, closeSync, writeSync, statSync, realpathSync, lstatSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadTicketStoreReadOnly, ticketStoreExists } from './generated-ticket-reader.mjs';
 import { resolveActiveTicketId as resolveActiveTicketIdCanonical } from './generated-active-ticket.mjs';
@@ -71,10 +71,32 @@ async function stdinJson() {
   return text ? JSON.parse(text) : {};
 }
 
+/**
+ * The repository a hook decision is about.
+ *
+ * Copilot's preToolUse stdin carries `cwd` — the directory the tool call targets.
+ * The hook PROCESS may start somewhere else (an older CLI, a `/cd`, a worktree
+ * switch), and a repository read anchored on process.cwd() then finds no
+ * `.adlc/`, no pointer and no store, and the gate allows: a silent fail-open of
+ * an enforcing hook (#811). So the payload names the repository, and the process
+ * cwd is only the fallback for a payload that carries no usable `cwd`.
+ *
+ * Pure on purpose: `fallback` is passed in by the caller, never read here, so
+ * the derivation can be tested without a process.
+ */
+export function payloadRoot(payload, fallback) {
+  const cwd = payload?.cwd;
+  return typeof cwd === 'string' && cwd.trim() !== '' ? resolve(cwd) : fallback;
+}
+
+function realpathOrSelf(path) {
+  try { return realpathSync(path); } catch { return path; }
+}
+
 // Enforcing gate: a malformed/conflicting pointer fails closed, matching
 // adlc-rails-guard.mjs's resolveActiveTicketId().
-function resolveActiveTicketId() {
-  const resolved = resolveActiveTicketIdCanonical({ root: process.cwd(), env: process.env });
+function resolveActiveTicketId(root) {
+  const resolved = resolveActiveTicketIdCanonical({ root, env: process.env });
   if (!resolved.ok) fail(resolved.message);
   return { id: resolved.value?.id ?? undefined };
 }
@@ -255,27 +277,103 @@ export const BYPASS_RECORD_ENV_ALLOWLIST = Object.freeze([
 // promptly, instead of holding the tool call until the host gives up.
 const BYPASS_RECORD_TIMEOUT_MS = 5000;
 
-/**
- * First `name` on `pathEnv` that is a regular file owned by this process's uid
- * and does not sit inside a node_modules directory, or null. Never throws.
- */
 export function resolveTrustedBinary(name, pathEnv) {
-  if (typeof pathEnv !== 'string' || pathEnv.length === 0) return null;
-  const sep = process.platform === 'win32' ? ';' : ':';
-  const selfUid = typeof process.getuid === 'function' ? process.getuid() : null;
-  for (const dir of pathEnv.split(sep)) {
-    if (!dir || dir.includes('node_modules')) continue;
-    const candidate = join(dir, name);
-    try {
-      const st = statSync(candidate);
-      if (!st.isFile()) continue;
-      if (selfUid !== null && st.uid !== selfUid) continue;
-      return candidate;
-    } catch {
-      /* try the next PATH entry */
-    }
+  for (const { candidate, rejection } of binaryCandidates(name, pathEnv)) {
+    if (rejection === null) return candidate;
   }
   return null;
+}
+
+/**
+ * Why a stat'ed candidate may not run, or null when it may. Accepted: a file this
+ * user owns, or a `sudo npm i -g` install, where the file, the PATH entry naming
+ * it (`link`, from lstat) and the directory holding that entry are all owned by
+ * root, and neither the file nor the directory is writable by group or others.
+ * Only root can create root-owned entries, so a symlink someone else planted,
+ * pointing at a root-owned program such as /bin/sh, is still refused: the link
+ * itself is not root's. A symlink's own mode bits are always 0777 and never
+ * consulted; the directory decides who can replace it. `ancestors` are the
+ * directories above the real file and above the PATH directory, up to `/`:
+ * another account able to write any of them could swap what runs.
+ */
+export function ownershipRejection({ file, link, dir, ancestors = [] }, selfUid) {
+  if (file.uid === selfUid) return null;
+  if (file.uid !== 0) return `it is owned by uid ${file.uid}, not by you or by root`;
+  const locked = (st) => st.uid === 0 && (st.mode & 0o022) === 0;
+  if (!locked(file)) return 'it is root-owned but writable by group or others';
+  const isSymlink = (link.mode & 0o170000) === 0o120000;
+  if (link.uid !== 0 || (!isSymlink && !locked(link))) return 'it is reached through a link that root does not own';
+  if (!locked(dir)) return 'its directory is not root-owned or is writable by group or others';
+  if (!ancestors.every(locked)) return 'a directory above it is not root-owned or is writable by group or others';
+  return null;
+}
+
+/** The directories above `file`, nearest first, up to and including the filesystem root. */
+export function ancestorDirs(file) {
+  const out = [];
+  for (let d = dirname(file); ; d = dirname(d)) {
+    out.push(d);
+    if (dirname(d) === d) return out;
+  }
+}
+
+/** The directories whose writers could swap what `candidate` runs: those above its real file and above the real PATH entry. */
+export function candidateAncestors(candidate, dir, name) {
+  return [...ancestorDirs(realpathSync(candidate)), ...ancestorDirs(join(realpathSync(dir), name))];
+}
+
+/** Every `name` file on PATH in order, each with its rejection reason (null when trusted). Never runs one. */
+function binaryCandidates(name, pathEnv) {
+  if (typeof pathEnv !== 'string') return []; // an empty PATH splits to one empty entry, skipped below
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const selfUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const out = [];
+  for (const dir of pathEnv.split(sep)) {
+    if (!dir) continue;
+    const candidate = join(dir, name);
+    let file;
+    try {
+      file = statSync(candidate);
+    } catch {
+      continue; // no file here: try next PATH entry
+    }
+    if (!file.isFile()) continue;
+    let stats = null;
+    try {
+      stats = candidateStats(candidate, dir, name, file, selfUid);
+    } catch {
+      /* refused below as uninspectable */
+    }
+    out.push({ candidate, rejection: candidateRejection(dir, stats, selfUid) });
+  }
+  return out;
+}
+
+/**
+ * What ownershipRejection judges for an existing `candidate`: the followed file,
+ * the PATH entry itself (lstat), its directory, and, for a root-owned file this
+ * user does not own, every directory above the real file and the real PATH entry.
+ * Throws when any of them cannot be stat'ed.
+ */
+export function candidateStats(candidate, dir, name, file, selfUid) {
+  const stats = { file, link: lstatSync(candidate), dir: statSync(dir) };
+  if (file.uid === 0 && file.uid !== selfUid) {
+    stats.ancestors = candidateAncestors(candidate, dir, name).map((d) => statSync(d));
+  }
+  return stats;
+}
+
+/**
+ * Why the candidate found in PATH entry `dir` may not run (null when it may).
+ * Where it was found is judged first, so a repository-controlled location is
+ * named even when its stats are missing; `stats` is null when they could not
+ * be gathered.
+ */
+export function candidateRejection(dir, stats, selfUid) {
+  if (!isAbsolute(dir)) return 'it is reached through a relative PATH entry, which resolves inside the repository';
+  if (dir.includes('node_modules')) return 'it is inside node_modules, where a repository could have placed it';
+  if (stats === null) return 'its link or a directory above it could not be inspected';
+  return selfUid === null ? null : ownershipRejection(stats, selfUid);
 }
 
 function allowlistedEnv(env) {
@@ -398,16 +496,25 @@ function readOptionalTranscript(path) {
 }
 
 async function main() {
-  if (!existsSync('.adlc')) process.exit(0); // not an ADLC repo → allow
-  if (!ticketStoreExists(process.cwd(), process.env)) process.exit(0); // no tickets → nothing to gate → allow
-
+  // The payload is read FIRST: it names the repository every check below is
+  // about (see payloadRoot). The existence checks that used to gate the stdin
+  // read were anchored on process.cwd(), which is not that repository.
   const payload = await stdinJson();
-  const active = resolveActiveTicketId();
+  const processCwd = process.cwd();
+  const root = payloadRoot(payload, processCwd);
+  if (realpathOrSelf(root) !== realpathOrSelf(processCwd)) {
+    console.error(`adlc-build-gate: resolving the repository from the payload cwd ${root} (process cwd ${processCwd})`);
+  }
+
+  if (!existsSync(join(root, '.adlc'))) process.exit(0); // not an ADLC repo → allow
+  if (!ticketStoreExists(root, process.env)) process.exit(0); // no tickets → nothing to gate → allow
+
+  const active = resolveActiveTicketId(root);
   if (!active.id) process.exit(0); // no active ticket declared → allow (opt-in gate)
 
   let ticket;
   try {
-    ticket = loadTicketStoreReadOnly({ root: process.cwd(), env: process.env }).tickets.find((t) => t.id === active.id);
+    ticket = loadTicketStoreReadOnly({ root, env: process.env }).tickets.find((t) => t.id === active.id);
   } catch (e) {
     fail(`cannot read the ticket store (${e.message}) — active ticket ${active.id}'s risk cannot be verified, failing closed`);
   }
@@ -428,7 +535,7 @@ async function main() {
 
   if (result.decision === 'allow') process.exit(0);
   if (result.decision === 'pending-bypass') {
-    if (recordBuildGateBypass(active.id, result.signals, result.depth, result.sessionBytes)) process.exit(0); // audited → allow
+    if (recordBuildGateBypass(active.id, result.signals, result.depth, result.sessionBytes, { cwd: root })) process.exit(0); // audited → allow
     fail('ADLC_BUILD_GATE_BYPASS is set but the override could not be recorded to the gate-manifest (is @adlc/cli installed and .adlc writable?). An unaudited bypass is refused — the build is blocked.');
   }
   fail(result.reason);

@@ -17,6 +17,7 @@ Follow each README for full options, output schemas, examples, and implementatio
 | `@adlc/context-handoff` | `handoff` | Signals context-rot bands, denies at a session terminal (D1–D3), and provides the operator CLI for write/resume/bypass/repair/unlock continuity checkpoints. Since 1.11.1 no harness wires the deny by default (opt-in on pi and OpenCode via `ADLC_CONTEXT_ROT_HANDOFF_ENABLED=1`); the bands and the CLI are unaffected. | [`packages/context-handoff/README.md`](../packages/context-handoff/README.md) |
 | `@adlc/copilot` | none (Copilot plugin) | Native ADLC plugin for the GitHub Copilot CLI (`plugins/adlc-copilot`): skills, `preToolUse` rails/build-gate hooks, allowlisted MCP gate tools, and read-only prosecution agents. Rail decision delegated to `@adlc/core`; the in-session hook **enforces headless** (deny-ask defaults to deny, overrides `--allow-tool`) unless `--allow-all-tools` is used, and CI `rails-guard-ci` is the unbypassable backstop. | [`docs/integrations/copilot.md`](./integrations/copilot.md) |
 | `@adlc/core` | none | Shared LLM, git, CLI, ledger, ticket, and mutation primitives. | [`packages/core/README.md`](../packages/core/README.md) |
+| `@adlc/decision-layer` | `decision` | Asks a typed classifier versioned questions about a change and records the answers (shadow mode: never changes an outcome). | [`packages/decision-layer/README.md`](../packages/decision-layer/README.md) |
 | `@adlc/flail-detector` | `flail-detector` | Detects repeated errors, scope violations, edit churn, oversized session logs, and token spend past the ticket budget. | [`packages/flail-detector/README.md`](../packages/flail-detector/README.md) |
 | `@adlc/fleet` | `adlc-fleet` | Orchestrates parallel ticket execution — dispatches ready tickets to sandboxed workers, then gates, prosecutes, and merges to an integration branch. Operator-local extension flags (`--no-pr`, `--no-complete`, `--max-strikes`, `--wall-clock-minutes`, `--pre-strike-argv`, bounded reads, git mirror, egress allowlist, `--worker-deps`) and a `--json` result with a closed `reason` set let an orchestrator such as the issue autopilot compose it. | [`packages/fleet/README.md`](../packages/fleet/README.md) |
 | `@adlc/gate-fuzzing` | `gate-fuzzing` | Runs hostile candidates against gate suites to find defeats and calibration gaps. | [`packages/gate-fuzzing/README.md`](../packages/gate-fuzzing/README.md) |
@@ -53,6 +54,7 @@ adlc behavior-diff compare before.json after.json [--json]
 adlc coldstart <ticket-id> [options]
 adlc coldstart --all [options]
 adlc consensus-fix --test-cmd "..." --files a.mjs,b.mjs [options]
+adlc decision evaluate --mode shadow --provider <jev|mock> --model <id> --pack <pack-id> [--revision <rev>] [--ticket <id>] [--pr <number>] [--mock-response <file>] [--json]
 adlc flail-detector <log-file> [--scope <glob>...] [--max-repeat <n>] [--max-bytes <n>] [--spent-tokens <n>] [--budget <n>] [--json]
 adlc gate-fuzzing [--suite <path>] [--n <int>] [--tier cheap|mid] [--json]
 adlc gate-manifest record <gate-name> [--ticket id] [--data '{json}'] [--files a,b,c] [--dir path] [--json]
@@ -71,7 +73,7 @@ adlc premortem <spec.md> [--tier cheap|mid|frontier] [--out report.md] [--json] 
 adlc prosecute --input p5-passes.json --ticket id [--target label] [--revision rev] [--dir .adlc] [--json]
 adlc rails-guard [--base <ref>] [--ticket <id>] [--tickets <path>] [--rails <glob>...] [--record] [--json]
 adlc build-gate <ticket-id> [--depth <n>] [--session-bytes <n>] [--transcript <path>] [--depth-threshold <n>] [--bytes-threshold <n>] [--tickets <path>] [--reason <text>] [--json]
-adlc rejection-mining [--limit N] [--min N] [--out-dir PATH] [--write] [--llm] [--prompt-only] [--json]
+adlc rejection-mining [--limit N] [--min N] [--out-dir PATH] [--write] [--force] [--llm] [--prompt-only] [--json]
 adlc review-calibration --review-cmd "cmd with {base} placeholder" [options]
 adlc run <p0|p1|p2|p3|p4|p5|p6|p7> [--ticket id for p0-p1,p3-p6] [--revision rev for p5-p6] [--dir .adlc] [--json]
 adlc accept --ticket id --packet .adlc/packet.json [--before .adlc/before.json] [--after .adlc/after.json] [--revision rev] [--dir .adlc] [--json]
@@ -117,6 +119,7 @@ Review evidence and calibration:
 - `review-calibration`
 - `model-ratchet`
 - `gate-fuzzing`
+- `decision`
 
 Compounding defenses:
 
