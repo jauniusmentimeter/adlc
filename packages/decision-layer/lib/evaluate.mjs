@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ConfigError, GitOutputError, RecordError } from './errors.mjs';
 import { diffStats, mainCheckoutRoot, projectRoot, resolveRevision, ticketFacts } from './inputs.mjs';
+import { aiGatewayUnsupported, createAiGatewayProvider } from './adapters/ai-gateway.mjs';
 import { createJevProvider, jevUnsupported } from './adapters/jev.mjs';
 import { createMockProvider } from './mock-provider.mjs';
 import { PackError, loadPack } from './pack.mjs';
@@ -29,14 +30,25 @@ export function jevOptions(config, env) {
   return { apiKey: env.TYPESAFE_API_KEY || env.JEV_API_KEY, apiUrl: config.apiUrl };
 }
 
-/** The provider a validated config names; a jev key that is absent or unusable here is a ConfigError. */
+/** The AI Gateway provider's key: AI_GATEWAY_API_KEY only. Its endpoint is fixed. */
+export function aiGatewayOptions(env) {
+  return { apiKey: env.AI_GATEWAY_API_KEY };
+}
+
+/** Why a remote provider cannot ask a pack, by provider; mock can ask any pack. */
+const UNSUPPORTED = { jev: jevUnsupported, 'ai-gateway': aiGatewayUnsupported };
+const QUESTION_LIMITS = {
+  jev: 'it supports only Choice and Noul questions',
+  'ai-gateway': 'it supports only Choice and Noul questions, and at most 255 choices',
+};
+
+/** The provider a validated config names; a key that is absent or unusable here is a ConfigError. */
 export function providerFor(config, env, responseText) {
-  if (config.provider === 'jev') {
-    try {
-      return createJevProvider(jevOptions(config, env));
-    } catch (error) {
-      throw new ConfigError(error.message);
-    }
+  try {
+    if (config.provider === 'jev') return createJevProvider(jevOptions(config, env));
+    if (config.provider === 'ai-gateway') return createAiGatewayProvider(aiGatewayOptions(env));
+  } catch (error) {
+    throw new ConfigError(error.message);
   }
   return createMockProvider({ responseText });
 }
@@ -47,9 +59,9 @@ async function shadowRun(config, { cwd, env, retryDelayMs, now }) {
   const ticket = ticketFacts(root, config.ticket);
   const responseText = readMockResponse(cwd, config.mockResponse);
   const pack = loadPack(config.pack, { projectRoot: root });
-  const unsupported = config.provider === 'jev' ? jevUnsupported(pack) : null;
-  if (unsupported === 'unsupported-question') throw new ConfigError(`--provider jev cannot ask pack ${pack.id}: it supports only Choice and Noul questions`);
-  if (unsupported === 'unsupported-pack') throw new ConfigError(`--provider jev cannot ask pack ${pack.id}: every question must declare the same inputs`);
+  const unsupported = UNSUPPORTED[config.provider]?.(pack) ?? null;
+  if (unsupported === 'unsupported-question') throw new ConfigError(`--provider ${config.provider} cannot ask pack ${pack.id}: ${QUESTION_LIMITS[config.provider]}`);
+  if (unsupported === 'unsupported-pack') throw new ConfigError(`--provider ${config.provider} cannot ask pack ${pack.id}: every question must declare the same inputs`);
   const revision = resolveRevision(root, config.revision);
   const { sanitizedInput, inputHash } = sanitize({ ...diffStats(root, revision), ...ticket }, pack);
 

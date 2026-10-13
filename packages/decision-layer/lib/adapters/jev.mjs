@@ -23,23 +23,13 @@
 // `unknown`, but not retried, since the request may already have been served. Any other non-2xx status (a redirect, a
 // rejected key, a refused request) is a rejection, which is `error`, as is a
 // 2xx body that is not JSON or is larger than MAX_RESPONSE_BYTES; a body is
-// never read past that limit.
+// never read past that limit. The HTTP plumbing is shared in common.mjs.
+
+import { API_KEY_PATTERN, MAX_RESPONSE_BYTES, Unsupported, assertApiKey, noulAnswer, postJson, readBounded, sharedInput, singleCallUnsupported } from './common.mjs';
 
 export const DEFAULT_API_URL = 'https://api.typesafe.ai/v1/systemone';
-export const MAX_RESPONSE_BYTES = 65_536;
-const RATE_LIMITED = new Set([429, 529]);
 
-const round = (value) => Math.round(value * 1e6) / 1e6;
-
-class Unsupported extends Error {
-  constructor(errorClass) {
-    super(errorClass);
-    this.errorClass = errorClass;
-  }
-}
-
-/** A key that can travel in an HTTP header: printable ASCII, no spaces. */
-export const API_KEY_PATTERN = /^[\x21-\x7e]+$/;
+export { API_KEY_PATTERN, MAX_RESPONSE_BYTES, readBounded, singleCallUnsupported as jevUnsupported };
 
 /** The key is only ever sent to an https URL that carries no credentials of its own. */
 export function assertSafeApiUrl(value) {
@@ -55,24 +45,11 @@ function typesafeQuestion({ kind, prompt, domain }) {
   throw new Unsupported('unsupported-question');
 }
 
-/**
- * Why Jev cannot ask this pack's questions in one call, or null when it can:
- * every question must be Choice or Noul and declare the same inputs.
- * @param {{ questions: Array<{ kind: string, inputs: string[] }> }} pack
- */
-export function jevUnsupported(pack) {
-  if (pack.questions.some((question) => question.kind !== 'Choice' && question.kind !== 'Noul')) return 'unsupported-question';
-  const inputs = new Set(pack.questions.map((question) => JSON.stringify([...question.inputs].sort())));
-  return inputs.size === 1 ? null : 'unsupported-pack';
-}
-
 /** The one TypeSafe request for a provider-neutral request; throws Unsupported when there is none. */
 export function typesafeRequest(request) {
-  const inputs = new Set(request.questions.map((question) => JSON.stringify(question.input)));
-  if (inputs.size !== 1) throw new Unsupported('unsupported-pack');
   return {
     model: request.model,
-    state: request.questions[0].input,
+    state: sharedInput(request),
     questions: Object.fromEntries(request.questions.map((question) => [question.id, typesafeQuestion(question)])),
   };
 }
@@ -93,11 +70,7 @@ function neutralAnswer(id, answer) {
       ...(answer.confidence === undefined ? {} : { confidence: answer.confidence }),
     };
   }
-  if (answer.type === 'noul') {
-    const p = answer.noul;
-    if (typeof p !== 'number') return { id, kind: 'Noul', value: p, probability: p };
-    return p >= 0.5 ? { id, kind: 'Noul', value: 'yes', probability: p } : { id, kind: 'Noul', value: 'no', probability: round(1 - p) };
-  }
+  if (answer.type === 'noul') return noulAnswer(id, answer.noul);
   return { id, kind: String(answer.type), value: undefined };
 }
 
@@ -128,70 +101,12 @@ export function neutralBody(reply) {
   };
 }
 
-/** The body as text, or null once it passes `limit` bytes (the stream is then cancelled). */
-export async function readBounded(response, limit = MAX_RESPONSE_BYTES) {
-  const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > limit) {
-    await response.body?.cancel().catch(() => {});
-    return null;
-  }
-  if (!response.body) return '';
-  const reader = response.body.getReader();
-  const chunks = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel().catch(() => {});
-      return null;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-async function post({ fetchImpl, apiUrl, apiKey, signal }, body) {
-  let response;
-  try {
-    response = await fetchImpl(apiUrl, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      redirect: 'manual',
-      signal,
-    });
-  } catch {
-    return { failure: 'network' };
-  }
-  if (response.type === 'opaqueredirect') return { rejected: 'http-redirect' };
-  if (response.status < 200 || response.status >= 300) {
-    await response.body?.cancel().catch(() => {});
-    if (RATE_LIMITED.has(response.status)) return { failure: 'rate-limit' };
-    if (response.status >= 500) return { failure: 'server-error' };
-    return { rejected: `http-${response.status}` };
-  }
-  let text;
-  try {
-    text = await readBounded(response);
-  } catch {
-    return { failure: 'interrupted-response' };
-  }
-  if (text === null) return { rejected: 'response-too-large' };
-  try {
-    return { body: neutralBody(JSON.parse(text)) };
-  } catch {
-    return { rejected: 'malformed-response' };
-  }
-}
-
 /**
  * @param {{ apiKey: string, apiUrl?: string, fetch?: typeof fetch }} options
  * @returns {{ name: 'jev', call: (request: object, options?: { signal?: AbortSignal }) => Promise<{ body: unknown } | { failure: string } | { rejected: string, dispatched?: false }> }}
  */
 export function createJevProvider({ apiKey, apiUrl = DEFAULT_API_URL, fetch: fetchImpl = globalThis.fetch }) {
-  if (typeof apiKey !== 'string' || !API_KEY_PATTERN.test(apiKey)) throw new TypeError('the Jev API key is missing or holds characters a header cannot carry');
+  assertApiKey(apiKey, 'the Jev API key');
   const url = assertSafeApiUrl(apiUrl);
   return {
     name: 'jev',
@@ -203,7 +118,7 @@ export function createJevProvider({ apiKey, apiUrl = DEFAULT_API_URL, fetch: fet
         if (error instanceof Unsupported) return { rejected: error.errorClass, dispatched: false };
         throw error;
       }
-      return post({ fetchImpl, apiUrl: url, apiKey, signal }, body);
+      return postJson({ fetchImpl, apiUrl: url, apiKey, signal }, body, neutralBody);
     },
   };
 }

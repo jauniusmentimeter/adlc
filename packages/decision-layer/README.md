@@ -13,7 +13,7 @@ Nothing changes for a project that does not run the command.
 ## Usage
 
 ```
-adlc decision evaluate --mode shadow --provider <jev|mock> --model <id> \
+adlc decision evaluate --mode shadow --provider <ai-gateway|jev|mock> --model <id> \
   --pack <pack-id> [--revision <rev>] [--ticket <id>] [--pr <number>] \
   [--mock-response <file>] [--json]
 ```
@@ -21,17 +21,17 @@ adlc decision evaluate --mode shadow --provider <jev|mock> --model <id> \
 | Flag | Description | Default |
 |---|---|---|
 | `--mode` | `off` (does nothing) or `shadow`. Anything else is refused. | `off` |
-| `--provider` | `mock` (offline), or `jev` (TypeSafe's API) | — |
-| `--model` | Model identifier to request | — |
+| `--provider` | `mock` (offline), `jev` (TypeSafe's API), or `ai-gateway` (Vercel AI Gateway's Decisions API) | — |
+| `--model` | Model identifier to request; a gateway slug is `vendor/model` | — |
 | `--pack` | Question pack ID. Shipped: `change-risk-v1` | — |
 | `--revision` | Revision whose change is described | `HEAD` |
 | `--ticket`, `--pr` | Join keys recorded with the run; never sent to the provider | — |
 | `--mock-response <file>` | With `--provider mock`: the reply to return | fixed reply |
 | `--json` | Print the run record as JSON | false |
 
-Environment variables supply credentials and the endpoint only
-(`TYPESAFE_API_KEY`, falling back to `JEV_API_KEY`; `TYPESAFE_API_URL`). They
-never select a mode, provider or model.
+Environment variables supply credentials and the jev endpoint only
+(`TYPESAFE_API_KEY`, falling back to `JEV_API_KEY`; `TYPESAFE_API_URL`;
+`AI_GATEWAY_API_KEY`). They never select a mode, provider or model.
 
 ### Exit codes
 
@@ -117,3 +117,31 @@ least 0.5 (a tie counts as `yes`) and otherwise as `no` with probability 1 - p.
 other non-2xx status (a redirect, a rejected key) is `error`, as is a reply that
 does not report the model that answered. A key with whitespace or other
 characters an HTTP header cannot carry is a configuration error.
+
+`ai-gateway` asks Vercel AI Gateway's OpenAI-compatible Decisions API at the
+fixed URL `https://ai-gateway.vercel.sh/v1/decisions`, using
+`AI_GATEWAY_API_KEY` only; no variable can change the endpoint. `--model` is a
+gateway decision-model slug such as `typesafe-ai/jev` or
+`openai/gpt-6-luna-decisions`. The gateway lists only alias slugs, so a record
+names the model, not its release, and a pinned ID such as
+`typesafe-ai/jev-1.13.0` is refused by the gateway (404, so `error`). Its tests
+replay live responses captured on 2026-10-11
+(`test/fixtures/ai-gateway-live-2026-10-11.json`). The same pack rules as `jev`
+apply, plus at most 255 labels per `Choice`; any other pack is refused as a
+configuration error. A `Noul` question is asked as a `predicate` and recorded
+with the same P(yes) rule. Failures are classified as for `jev`. A refusal, or
+an answer of another type, is `malformed-response`.
+
+Every recorded probability comes from the requested model: the gateway refuses
+a language model on this endpoint (400), the adapter sends no
+`providerOptions` (so no decision fallback can run), and a reply that names any
+other model than the one requested is `error` with `model-mismatch`, recording
+the model that answered. This does not cover the gateway re-pointing an alias
+to a new release, or account-level routing rules. `ai-gateway` sends the input
+as one canonical JSON string while `jev` sends a structured `state`, so records
+of the same model from the two providers must not be pooled.
+
+OpenRouter is not a provider yet. It serves Jev with model-reported
+probabilities over TypeSafe's System One API
+(`https://openrouter.ai/api/v1/systemone`, the shape `jev` speaks) and over its
+own Decisions API, but no live capture is available.

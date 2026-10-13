@@ -3,7 +3,7 @@ import { parseCommand, validateConfig } from './config.mjs';
 import { ConfigError } from './errors.mjs';
 import { runEvaluate } from './evaluate.mjs';
 
-export const USAGE = `adlc decision evaluate --mode shadow --provider <jev|mock> --model <id> \\
+export const USAGE = `adlc decision evaluate --mode shadow --provider <ai-gateway|jev|mock> --model <id> \\
   --pack <pack-id> [--revision <rev>] [--ticket <id>] [--pr <number>] \\
   [--mock-response <file>] [--json]
 
@@ -12,8 +12,9 @@ answers to .adlc/decisions/runs.jsonl in the main checkout. Shadow mode only:
 the answers never change an exit code, ticket, rail, routing or verdict.
 
   --mode            off (default: does nothing) or shadow
-  --provider        mock (offline), or jev (TypeSafe; needs TYPESAFE_API_KEY or JEV_API_KEY)
-  --model           model identifier to request
+  --provider        mock (offline), jev (TypeSafe; needs TYPESAFE_API_KEY or JEV_API_KEY),
+                    or ai-gateway (Vercel AI Gateway decisions; needs AI_GATEWAY_API_KEY)
+  --model           model identifier to request (a gateway slug is vendor/model)
   --pack            question pack ID (shipped: change-risk-v1)
   --revision        revision to describe (default HEAD)
   --ticket, --pr    join keys recorded with the run; never sent to the provider

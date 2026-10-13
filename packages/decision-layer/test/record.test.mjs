@@ -70,7 +70,7 @@ function runDecision(t, cwd) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [BIN, 'evaluate', '--mode', 'shadow', '--provider', 'mock', '--model', 'm', '--pack', 'change-risk-v1'], {
       cwd,
-      env: { PATH: process.env.PATH, HOME: tmp(t, 'decision-home-'), TYPESAFE_API_KEY: '', JEV_API_KEY: '', NODE_OPTIONS: `--import=${NO_NETWORK_PRELOAD}` },
+      env: { PATH: process.env.PATH, HOME: tmp(t, 'decision-home-'), TYPESAFE_API_KEY: '', JEV_API_KEY: '', AI_GATEWAY_API_KEY: '', NODE_OPTIONS: `--import=${NO_NETWORK_PRELOAD}` },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     let stderr = '';

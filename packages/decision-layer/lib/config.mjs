@@ -6,8 +6,9 @@ import { PACK_ID_PATTERN } from './pack.mjs';
 import { API_KEY_PATTERN, DEFAULT_API_URL, assertSafeApiUrl } from './adapters/jev.mjs';
 
 export const MODES = Object.freeze(['off', 'shadow']);
-export const PROVIDERS = Object.freeze(['mock', 'jev']);
-export const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+export const PROVIDERS = Object.freeze(['mock', 'jev', 'ai-gateway']);
+// Zero or one '/' (a gateway slug is vendor/model), 128 characters in total.
+export const MODEL_PATTERN = /^(?=.{1,128}$)[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:-]*)?$/;
 export const TICKET_ID_PATTERN = /^[A-Za-z][A-Za-z0-9-]{0,63}$/;
 
 const OPTIONS = {
@@ -88,6 +89,11 @@ export function validateConfig(options, env) {
     const key = env.TYPESAFE_API_KEY || env.JEV_API_KEY;
     if (!key) throw new ConfigError('--provider jev needs TYPESAFE_API_KEY or JEV_API_KEY in the environment');
     if (!API_KEY_PATTERN.test(key)) throw new ConfigError('the Jev API key holds whitespace or other characters a header cannot carry');
+  }
+  if (provider === 'ai-gateway') {
+    const key = env.AI_GATEWAY_API_KEY;
+    if (!key) throw new ConfigError('--provider ai-gateway needs AI_GATEWAY_API_KEY in the environment');
+    if (!API_KEY_PATTERN.test(key)) throw new ConfigError('the AI Gateway API key holds whitespace or other characters a header cannot carry');
   }
   return {
     mode,

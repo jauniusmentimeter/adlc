@@ -64,6 +64,7 @@ export function runCli(t, args, { cwd, env = {} }) {
       HOME: tmp(t, 'decision-home-'),
       TYPESAFE_API_KEY: '',
       JEV_API_KEY: '',
+      AI_GATEWAY_API_KEY: '',
       TYPESAFE_API_URL: '',
       NODE_OPTIONS: `--import=${NO_NETWORK_PRELOAD}`,
       ...env,

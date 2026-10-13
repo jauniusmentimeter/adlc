@@ -25,7 +25,11 @@
 // non-negative integer; any other key is dropped, and a usage of any other shape
 // is malformed. A resolved model must be a valid model ID. A model ID ending
 // in -<major>.<minor>.<patch> is pinned: a reply that resolves it to any other
-// model is `error`. Any other ID is an alias, which may resolve to anything.
+// model is `error`. Any other ID is an alias, which may resolve to anything,
+// unless the provider declares `exactModel`: then a reply that names any model
+// other than the one requested is `model-mismatch`, decided before its answers
+// are validated, so a reply from another model is never hidden behind an
+// answer error.
 // The resolved model is whatever the reply reported, kept even when the reply
 // is otherwise unusable, and null when no reply arrived or none was reported.
 import { isPlainObject } from '@adlc/core';
@@ -171,10 +175,10 @@ async function callOnce(provider, request, timeoutMs) {
   }
 }
 
-function checkResolvedModel(model, resolvedModel) {
-  if (resolvedModel !== undefined && resolvedModel !== model && isPinnedModel(model)) {
-    throw new UnusableReply('model-mismatch', `pinned model ${model} resolved to ${resolvedModel}`);
-  }
+function checkResolvedModel(model, resolvedModel, exactModel) {
+  if (resolvedModel === undefined || resolvedModel === model) return;
+  if (exactModel) throw new UnusableReply('model-mismatch', `model ${model} was answered by ${resolvedModel}`);
+  if (isPinnedModel(model)) throw new UnusableReply('model-mismatch', `pinned model ${model} resolved to ${resolvedModel}`);
 }
 
 /**
@@ -223,9 +227,11 @@ export async function evaluateDecision({
     return { status: 'error', answers: [], resolvedModel: null, errorClass: outcome.rejected, usage: null, ...base };
   }
   const reported = isPlainObject(outcome.body) && validModel(outcome.body.resolvedModel) ? outcome.body.resolvedModel : null;
+  const exactModel = provider.exactModel === true;
   try {
+    if (exactModel && reported !== null) checkResolvedModel(model, reported, true);
     const reply = normalizeReply(outcome.body, pack);
-    checkResolvedModel(model, reply.resolvedModel);
+    checkResolvedModel(model, reply.resolvedModel, exactModel);
     return {
       status: 'ok',
       answers: reply.answers,
