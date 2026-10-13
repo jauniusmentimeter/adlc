@@ -32,4 +32,5 @@ import { runDenyProof } from './opencode-live-proofs.mjs';
 const { log, fail } = makeReporter('opencode-live-deny');
 log(`opencode ${requireOpencodeV2({ log, fail, require: process.argv.includes('--require') })}`);
 await runDenyProof({ log, fail, keep: process.argv.includes('--keep') });
-process.exit(); // reached only on success: fail() exits 1 itself
+// Reached only on success: fail() exits the process itself.
+process.exit();

@@ -174,3 +174,13 @@ test('tool proof fails, naming the missing evidence', async () => {
 test('the verdict constant is what the responder answers the keyless prompt with', () => {
   assert.equal(toolResultText({ content: KEYLESS_VERDICT }), KEYLESS_VERDICT);
 });
+
+test('the gate-prompt marker is distinctive and cannot be echoed by the verdict it triggers', () => {
+  assert.equal(typeof GATE_PROMPT_MARKER, 'string');
+  assert.ok(GATE_PROMPT_MARKER.length >= 8, 'long enough not to collide with ordinary prompt text');
+  assert.ok(!KEYLESS_VERDICT.includes(GATE_PROMPT_MARKER), 'a verdict containing the marker would be treated as another keyless request');
+  const seen = realHarness.newToolSeen();
+  const respond = realHarness.toolResponder({ marker: GATE_PROMPT_MARKER, verdict: KEYLESS_VERDICT }, seen);
+  assert.equal(textOf(respond({ messages: [{ role: 'user', content: 'an ordinary prompt' }], tools: [] })), 'ok');
+  assert.equal(seen.keylessAnswered, false);
+});
