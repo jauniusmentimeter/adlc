@@ -26,96 +26,10 @@
 // Exit codes: 0 = pass, 1 = fail, 3 = skipped (no `opencode` binary and not
 // --require). CI passes --require so a missing binary can never silently skip.
 
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import {
-  makeReporter, requireOpencodeV2, MOCK_PATCH_MODEL, installPackedPlugin, startMockProvider,
-  createProject, writeConfig, writePermissionProbe, readProbe,
-  gitInit, runOpencode, assertPluginsLoaded, DENY_RAIL as RAIL, DENY_RAIL_ORIGINAL as RAIL_ORIGINAL, denyResponder, writeDenyFixture,
-} from './opencode-live-harness.mjs';
-
-const REQUIRE = process.argv.includes('--require');
-const KEEP = process.argv.includes('--keep');
+import { makeReporter, requireOpencodeV2 } from './opencode-live-harness.mjs';
+import { runDenyProof } from './opencode-live-proofs.mjs';
 
 const { log, fail } = makeReporter('opencode-live-deny');
-log(`opencode ${requireOpencodeV2({ log, fail, require: REQUIRE })}`);
-
-let toolResults = [];
-const { server, baseURL } = await startMockProvider(({ messages, tools }) => denyResponder(toolResults)({ messages, tools }));
-log(`mock provider at ${baseURL}`);
-
-const { work, project, home, cleanup } = createProject('oc-live-deny-');
-try {
-  writeDenyFixture(project);
-  log('installing the packed plugin…');
-  const pluginDir = installPackedPlugin(project, join(work, 'packs'));
-  const probeLog = join(work, 'permission-probe.jsonl');
-  const probeDir = writePermissionProbe(join(work, 'probe'), probeLog);
-  writeConfig(project, {
-    baseURL,
-    plugins: [probeDir, pluginDir],
-    permissions: [{ action: '*', resource: '*', effect: 'allow' }],
-  });
-  gitInit(project);
-
-  const run = async (env, model) => { toolResults = []; const r = await runOpencode({ project, home, prompt: `Overwrite ${RAIL} please`, env, model }); return { ...r, toolResults: [...toolResults] }; };
-  const evaluated = () => readProbe(probeLog).filter((d) => d.action === 'edit' && Array.isArray(d.resources) && d.resources.includes(RAIL));
-  const dump = (r) => `exit=${r.status} timedOut=${r.timedOut} after ${r.seconds}s\ntool results: ${JSON.stringify(r.toolResults, null, 2)}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr.split('\n').slice(-80).join('\n')}`;
-
-  // ---- run 1: CONTROL (enforcement off) — the write must actually land ----
-  log('control run (enforcement off)…');
-  const control = await run({ ADLC_P4_ENFORCEMENT: '0' });
-  assertPluginsLoaded(control, fail, 'control');
-  if (readFileSync(join(project, RAIL), 'utf8') === RAIL_ORIGINAL) {
-    fail(`CONTROL run did not write the file — the harness never executed the write, so the deny proof would be hollow.\n${dump(control)}`);
-  }
-  log('control: write landed (harness genuinely executes the tool)');
-  const dispatched = evaluated();
-  log(`control: permission.evaluate invoked: ${dispatched.length > 0 ? 'yes' : 'no'}`);
-  if (dispatched.length === 0) {
-    fail(`the host never dispatched permission.evaluate (action "edit", resources [${RAIL}]) for the control write — the plugin's permission lever has nothing to bind to.\nprobe: ${JSON.stringify(readProbe(probeLog))}`);
-  }
-
-  writeFileSync(join(project, RAIL), RAIL_ORIGINAL);
-
-  // ---- run 2: TREATMENT (enforcement on) — the write must be BLOCKED ----
-  log('treatment run (ADLC_P4_ENFORCEMENT=1)…');
-  const treatment = await run({ ADLC_P4_ENFORCEMENT: '1' });
-  assertPluginsLoaded(treatment, fail, 'treatment');
-  if (readFileSync(join(project, RAIL), 'utf8') !== RAIL_ORIGINAL) {
-    fail(`TREATMENT run WROTE to the frozen rail — the execute.before throw did NOT abort the tool.\n${dump(treatment)}`);
-  }
-  const DENY = 'ADLC rails-guard: blocked write — frozen rail "test/**"';
-  if (!treatment.toolResults.some((t) => t.includes(DENY))) {
-    fail(`rail file unchanged but the rails-guard deny naming the rail never reached the model — cannot attribute the block to the plugin.\n${dump(treatment)}`);
-  }
-  log('treatment: write blocked AND the deny reason reached the model');
-  log(`treatment: permission.evaluate invoked: ${evaluated().length > dispatched.length ? 'yes' : 'no'} (execute.before denies first)`);
-
-  // ---- run 3: PATCH control + treatment ----
-  writeFileSync(join(project, RAIL), RAIL_ORIGINAL);
-  log('patch control run (enforcement off)…');
-  const patchControl = await run({ ADLC_P4_ENFORCEMENT: '0' }, MOCK_PATCH_MODEL);
-  assertPluginsLoaded(patchControl, fail, 'patch control');
-  if (readFileSync(join(project, RAIL), 'utf8') === RAIL_ORIGINAL) {
-    fail(`PATCH CONTROL run did not apply the patch — the patch deny proof would be hollow.\n${dump(patchControl)}`);
-  }
-  log('patch control: patch applied');
-  writeFileSync(join(project, RAIL), RAIL_ORIGINAL);
-  log('patch treatment run (ADLC_P4_ENFORCEMENT=1)…');
-  const patchTreatment = await run({ ADLC_P4_ENFORCEMENT: '1' }, MOCK_PATCH_MODEL);
-  assertPluginsLoaded(patchTreatment, fail, 'patch treatment');
-  if (readFileSync(join(project, RAIL), 'utf8') !== RAIL_ORIGINAL) {
-    fail(`PATCH TREATMENT run modified the frozen rail.\n${dump(patchTreatment)}`);
-  }
-  if (!patchTreatment.toolResults.some((t) => t.includes('ADLC rails-guard: blocked patch — frozen rail "test/**"'))) {
-    fail(`rail unchanged but the rails-guard patch deny never reached the model.\n${dump(patchTreatment)}`);
-  }
-  log('patch treatment: patch blocked AND the deny reason reached the model');
-  log('PASS — live deny proof holds (AC7)');
-} finally {
-  server.close();
-  if (KEEP) log(`--keep: temp project retained at ${work}`);
-  else cleanup();
-}
+log(`opencode ${requireOpencodeV2({ log, fail, require: process.argv.includes('--require') })}`);
+await runDenyProof({ log, fail, keep: process.argv.includes('--keep') });
 process.exit(); // reached only on success: fail() exits 1 itself
