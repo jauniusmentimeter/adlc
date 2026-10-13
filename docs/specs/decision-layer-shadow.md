@@ -58,15 +58,17 @@ before anything is read or sent.
 `--mode off` is a no-op: exit 0, nothing read, nothing sent, no record.
 
 Selecting a provider without `--mode shadow` is a configuration error, and so is
-selecting `jev` with no API key in the environment. An
-environment variable may supply credentials and the endpoint only
-(`TYPESAFE_API_KEY`, falling back to `JEV_API_KEY`; `TYPESAFE_API_URL`); it can
-never select a mode, provider or model.
+selecting `jev` or `ai-gateway` with no API key in the environment. An
+environment variable may supply credentials and the jev endpoint only
+(`TYPESAFE_API_KEY`, falling back to `JEV_API_KEY`; `TYPESAFE_API_URL`;
+`AI_GATEWAY_API_KEY`, see
+[`decision-layer-ai-gateway.md`](./decision-layer-ai-gateway.md)); it can never
+select a mode, provider or model.
 
 ## Interface
 
 ```text
-adlc decision evaluate --mode shadow --provider <jev|mock> --model <id> \
+adlc decision evaluate --mode shadow --provider <ai-gateway|jev|mock> --model <id> \
   --pack <pack-id> [--revision <rev>] [--ticket <id>] [--pr <number>] \
   [--mock-response <file>] [--json]
 ```

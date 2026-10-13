@@ -21,7 +21,7 @@ It is opt-in. Nothing changes for a project that never runs it.
 ## Usage
 
 ```sh
-adlc decision evaluate --mode shadow --provider <jev|mock> --model <id> --pack <pack-id> [--revision <rev>] [--ticket <id>] [--pr <number>] [--mock-response <file>] [--json]
+adlc decision evaluate --mode shadow --provider <ai-gateway|jev|mock> --model <id> --pack <pack-id> [--revision <rev>] [--ticket <id>] [--pr <number>] [--mock-response <file>] [--json]
 ```
 
 For example, an offline run against the shipped pack, joined to a ticket and PR:
@@ -33,7 +33,7 @@ adlc decision evaluate --mode shadow --provider mock --model mock-1 --pack chang
 | Flag | Description |
 | --- | --- |
 | `--mode off\|shadow` | `off` (default) does nothing. Any other value, including `enforce`, is refused. |
-| `--provider mock\|jev` | `mock` is offline. `jev` asks TypeSafe's System One API with `TYPESAFE_API_KEY` (or `JEV_API_KEY`). |
+| `--provider mock\|jev\|ai-gateway` | `mock` is offline. `jev` asks TypeSafe's System One API with `TYPESAFE_API_KEY` (or `JEV_API_KEY`). `ai-gateway` asks Vercel AI Gateway's Decisions API with `AI_GATEWAY_API_KEY`; `--model` is a gateway slug such as `typesafe-ai/jev`. |
 | `--model <id>` | Model identifier to request. |
 | `--pack <id>` | Question pack. Shipped: `change-risk-v1`. |
 | `--revision <rev>` | Revision whose change is described (default `HEAD`). |

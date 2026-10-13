@@ -230,10 +230,76 @@ test('--mode off inside a repository writes no record', (t) => {
   assert.equal(existsSync(recordFile(dir)), false);
 });
 
+for (const key of [undefined, '', 'ab c', 'abc\r']) {
+  test(`ai-gateway key ${JSON.stringify(key)} is refused before dispatch`, (t) => {
+    const env = key === undefined ? {} : { AI_GATEWAY_API_KEY: key };
+    refused(t, ['evaluate', '--mode', 'shadow', '--provider', 'ai-gateway', '--model', 'typesafe-ai/jev', '--pack', 'change-risk-v1'], key === undefined || key === ''
+      ? /--provider ai-gateway needs AI_GATEWAY_API_KEY in the environment/
+      : /the AI Gateway API key holds whitespace or other characters a header cannot carry/, { env });
+  });
+}
+
+test('ai-gateway reads no Jev credential or endpoint variable', (t) => {
+  refused(t, ['evaluate', '--mode', 'shadow', '--provider', 'ai-gateway', '--model', 'typesafe-ai/jev', '--pack', 'change-risk-v1'], /needs AI_GATEWAY_API_KEY/, {
+    env: { TYPESAFE_API_KEY: 'jev', JEV_API_KEY: 'fallback', TYPESAFE_API_URL: 'http://bad' },
+  });
+});
+
+test('ai-gateway with a valid key reaches fetch without a record', (t) => {
+  const { dir } = changeRepo(t);
+  const result = runCli(t, ['evaluate', '--mode', 'shadow', '--provider', 'ai-gateway', '--model', 'typesafe-ai/jev', '--pack', 'change-risk-v1'], { cwd: dir, env: { AI_GATEWAY_API_KEY: 'not-a-real-key' } });
+  assert.equal(result.status, FETCH_EXIT_CODE, result.stderr);
+  assert.equal(existsSync(recordFile(dir)), false);
+});
+
+for (const [name, question, expected] of [
+  ['a Score question', { id: 'severity', kind: 'Score', prompt: 'How severe?', domain: { min: 1, max: 3 }, phases: ['P0'], inputs: ['linesAdded'] }, /supports only Choice and Noul questions, and at most 255 choices/],
+  ['a 256-label Choice', { id: 'risk', kind: 'Choice', prompt: 'Risk?', domain: Array.from({ length: 256 }, (_v, i) => `choice-${i}`), phases: ['P0'], inputs: ['linesAdded', 'filesChanged', 'linesDeleted', 'extensionCounts', 'ticketCategory', 'declaredRailCount'] }, /supports only Choice and Noul questions, and at most 255 choices/],
+  ['mixed inputs', null, /every question must declare the same inputs/],
+]) {
+  test(`ai-gateway with ${name} is refused before dispatch`, (t) => {
+    const shipped = JSON.parse(readFileSync(join(PACKS_DIR, 'change-risk-v1', 'pack.json'), 'utf8'));
+    const questions = question ? [question] : [{ ...shipped.questions[0], inputs: ['linesAdded'] }, { ...shipped.questions[1], inputs: ['filesChanged'] }];
+    const pack = { ...shipped, id: 'gateway-unsupported', questions, aggregation: { escalateIf: [], allowIf: [] } };
+    refused(t, ['evaluate', '--mode', 'shadow', '--provider', 'ai-gateway', '--model', 'typesafe-ai/jev', '--pack', pack.id], expected, {
+      env: { AI_GATEWAY_API_KEY: 'k' },
+      prepare: (dir) => {
+        mkdirSync(join(dir, '.adlc', 'decision-packs', pack.id), { recursive: true });
+        writeFileSync(join(dir, '.adlc', 'decision-packs', pack.id, 'pack.json'), JSON.stringify(pack));
+      },
+    });
+  });
+}
+
+test('--mock-response with ai-gateway retains the mock-only error', (t) => {
+  refused(t, ['evaluate', '--mode', 'shadow', '--provider', 'ai-gateway', '--model', 'typesafe-ai/jev', '--pack', 'change-risk-v1', '--mock-response', 'x.json'], /--mock-response is valid only with --provider mock/);
+});
+
+test('gateway model slugs are accepted by mock, and invalid gateway model IDs are refused', (t) => {
+  const { dir } = changeRepo(t);
+  const accepted = runCli(t, ['evaluate', '--mode', 'shadow', '--provider', 'mock', '--model', 'typesafe-ai/jev', '--pack', 'change-risk-v1'], { cwd: dir });
+  assert.equal(accepted.status, 0, accepted.stderr);
+  for (const model of ['a/b/c', '/jev', 'jev/', 'a'.repeat(129)]) {
+    refused(t, ['evaluate', '--mode', 'shadow', '--provider', 'ai-gateway', '--model', model, '--pack', 'change-risk-v1'], /must match/, { env: { AI_GATEWAY_API_KEY: 'k' } });
+  }
+});
+
+test('a mock reply with a vendor/model resolved model is recorded as ok', (t) => {
+  const { dir } = changeRepo(t);
+  const reply = responseFile(t, { resolvedModel: 'vendor/model', answers: [{ id: 'risk', value: 'low' }, { id: 'needs-deeper-interrogation', value: 'no', probability: 0.9 }] });
+  const result = runCli(t, [...SHADOW, '--mock-response', reply, '--json'], { cwd: dir });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).resolvedModel, 'vendor/model');
+});
+
+test('unknown ai-gateway provider error names all supported providers', (t) => {
+  refused(t, ['evaluate', '--mode', 'shadow', '--provider', 'openrouter', '--model', 'm', '--pack', 'change-risk-v1'], /unknown --provider "openrouter": expected mock or jev or ai-gateway/);
+});
+
 test('--help prints usage and exits 0', (t) => {
   const result = runCli(t, ['--help'], { cwd: tmp(t, 'decision-help-') });
   assert.equal(result.status, 0);
-  assert.ok(result.stdout.includes('adlc decision evaluate --mode shadow --provider <jev|mock> --model <id>'), result.stdout);
+  assert.ok(result.stdout.includes('adlc decision evaluate --mode shadow --provider <ai-gateway|jev|mock> --model <id>'), result.stdout);
   assert.ok(result.stdout.includes('--pack <pack-id> [--revision <rev>] [--ticket <id>] [--pr <number>]'), result.stdout);
   assert.ok(result.stdout.includes('[--mock-response <file>] [--json]'), result.stdout);
   assert.match(result.stdout, /Exit codes:/);

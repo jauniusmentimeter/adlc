@@ -22,7 +22,7 @@ function resolvedBy(t, args, cwd) {
   const result = runBin(ADLC, args, {
     cwd,
     timeout: 60_000,
-    env: { DECISION_RESOLVE_LOG: log, NODE_OPTIONS: `--import=${REGISTER}`, TYPESAFE_API_KEY: '', JEV_API_KEY: '' },
+    env: { DECISION_RESOLVE_LOG: log, NODE_OPTIONS: `--import=${REGISTER}`, TYPESAFE_API_KEY: '', JEV_API_KEY: '', AI_GATEWAY_API_KEY: '' },
   });
   return { result, urls: existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] };
 }

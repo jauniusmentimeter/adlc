@@ -1,0 +1,344 @@
+{
+  "capturedAt": "2026-10-11T18:46:37.947Z",
+  "endpoint": "https://ai-gateway.vercel.sh/v1/decisions",
+  "auth": "Authorization: Bearer <AI_GATEWAY_API_KEY>",
+  "note": "Live Vercel AI Gateway Decisions API responses for the ai-gateway adapter tests. Requests built by hand from packs/change-risk-v1 and a synthetic input, with no adapter code. Redaction is an allowlist: ok bodies keep answers, model, usage and gateway routing identity; error bodies keep error and routing identity. The key is removed.",
+  "captures": [
+    {
+      "label": "ok-jev",
+      "request": {
+        "model": "typesafe-ai/jev",
+        "input": "{\"declaredRailCount\":3,\"extensionCounts\":{\"json\":1,\"md\":2,\"mjs\":3},\"filesChanged\":6,\"linesAdded\":180,\"linesDeleted\":24,\"ticketCategory\":\"feature\"}",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "instructions": "How risky is this change?",
+            "choices": [
+              {
+                "value": "low"
+              },
+              {
+                "value": "medium"
+              },
+              {
+                "value": "high"
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "instructions": "Should the spec get more interrogation before building?"
+          }
+        ]
+      },
+      "status": 200,
+      "contentType": "application/json",
+      "latencyMs": 484,
+      "body": {
+        "answers": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "choice": "medium",
+            "confidence": 0.33,
+            "probabilities": [
+              {
+                "value": "low",
+                "probability": 0.44
+              },
+              {
+                "value": "medium",
+                "probability": 0.55
+              },
+              {
+                "value": "high",
+                "probability": 0.01
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "probability": 0.49
+          }
+        ],
+        "model": "typesafe-ai/jev",
+        "usage": {
+          "input_tokens": 369,
+          "output_tokens": 61,
+          "total_tokens": 430
+        },
+        "provider_metadata": {
+          "gateway": {
+            "routing": {
+              "originalModelId": "typesafe-ai/jev",
+              "resolvedProvider": "typesafe-ai",
+              "canonicalSlug": "typesafe-ai/jev",
+              "finalProvider": "typesafe-ai"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "ok-luna",
+      "request": {
+        "model": "openai/gpt-6-luna-decisions",
+        "input": "{\"declaredRailCount\":3,\"extensionCounts\":{\"json\":1,\"md\":2,\"mjs\":3},\"filesChanged\":6,\"linesAdded\":180,\"linesDeleted\":24,\"ticketCategory\":\"feature\"}",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "instructions": "How risky is this change?",
+            "choices": [
+              {
+                "value": "low"
+              },
+              {
+                "value": "medium"
+              },
+              {
+                "value": "high"
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "instructions": "Should the spec get more interrogation before building?"
+          }
+        ]
+      },
+      "status": 200,
+      "contentType": "application/json",
+      "latencyMs": 937,
+      "body": {
+        "answers": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "choice": "medium",
+            "confidence": 0.6,
+            "probabilities": [
+              {
+                "value": "low",
+                "probability": 0.26
+              },
+              {
+                "value": "medium",
+                "probability": 0.73
+              },
+              {
+                "value": "high",
+                "probability": 0.01
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "probability": 0.5
+          }
+        ],
+        "model": "openai/gpt-6-luna-decisions",
+        "usage": {
+          "input_tokens": 308,
+          "output_tokens": 0,
+          "total_tokens": 308
+        },
+        "provider_metadata": {
+          "gateway": {
+            "routing": {
+              "originalModelId": "openai/gpt-6-luna-decisions",
+              "resolvedProvider": "openai",
+              "canonicalSlug": "openai/gpt-6-luna-decisions",
+              "finalProvider": "openai"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "pinned-not-offered",
+      "request": {
+        "model": "typesafe-ai/jev-1.13.0",
+        "input": "{\"declaredRailCount\":3,\"extensionCounts\":{\"json\":1,\"md\":2,\"mjs\":3},\"filesChanged\":6,\"linesAdded\":180,\"linesDeleted\":24,\"ticketCategory\":\"feature\"}",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "instructions": "How risky is this change?",
+            "choices": [
+              {
+                "value": "low"
+              },
+              {
+                "value": "medium"
+              },
+              {
+                "value": "high"
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "instructions": "Should the spec get more interrogation before building?"
+          }
+        ]
+      },
+      "status": 404,
+      "contentType": "application/json",
+      "latencyMs": 72,
+      "body": {
+        "error": {
+          "message": "Model 'typesafe-ai/jev-1.13.0' not found",
+          "type": "model_not_found",
+          "param": {
+            "modelId": "typesafe-ai/jev-1.13.0"
+          }
+        }
+      }
+    },
+    {
+      "label": "auth-invalid-key",
+      "request": {
+        "model": "typesafe-ai/jev",
+        "input": "{\"declaredRailCount\":3,\"extensionCounts\":{\"json\":1,\"md\":2,\"mjs\":3},\"filesChanged\":6,\"linesAdded\":180,\"linesDeleted\":24,\"ticketCategory\":\"feature\"}",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "instructions": "How risky is this change?",
+            "choices": [
+              {
+                "value": "low"
+              },
+              {
+                "value": "medium"
+              },
+              {
+                "value": "high"
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "instructions": "Should the spec get more interrogation before building?"
+          }
+        ]
+      },
+      "status": 401,
+      "contentType": "application/json",
+      "latencyMs": 73,
+      "body": {
+        "error": {
+          "message": "Authentication failed",
+          "type": "authentication_error",
+          "param": null,
+          "code": "authentication_error"
+        }
+      }
+    },
+    {
+      "label": "language-model",
+      "request": {
+        "model": "openai/gpt-5-mini",
+        "input": "{\"declaredRailCount\":3,\"extensionCounts\":{\"json\":1,\"md\":2,\"mjs\":3},\"filesChanged\":6,\"linesAdded\":180,\"linesDeleted\":24,\"ticketCategory\":\"feature\"}",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "instructions": "How risky is this change?",
+            "choices": [
+              {
+                "value": "low"
+              },
+              {
+                "value": "medium"
+              },
+              {
+                "value": "high"
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "instructions": "Should the spec get more interrogation before building?"
+          }
+        ]
+      },
+      "status": 400,
+      "contentType": "application/json",
+      "latencyMs": 337,
+      "body": {
+        "error": {
+          "message": "Model 'openai/gpt-5-mini' is a language model, not a decision model. Use the language generation API instead.",
+          "type": "invalid_request_error",
+          "param": {
+            "error": "Model 'openai/gpt-5-mini' is a language model, not a decision model. Use the language generation API instead.",
+            "type": "invalid_request_error",
+            "statusCode": 400,
+            "name": "ModelTypeMismatchError",
+            "message": "Model 'openai/gpt-5-mini' is a language model, not a decision model. Use the language generation API instead."
+          }
+        },
+        "providerMetadata": {
+          "gateway": {
+            "routing": {
+              "originalModelId": "openai/gpt-5-mini",
+              "resolvedProvider": "openai",
+              "canonicalSlug": "openai/gpt-5-mini"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "model-not-found",
+      "request": {
+        "model": "nosuch/decision-model",
+        "input": "{\"declaredRailCount\":3,\"extensionCounts\":{\"json\":1,\"md\":2,\"mjs\":3},\"filesChanged\":6,\"linesAdded\":180,\"linesDeleted\":24,\"ticketCategory\":\"feature\"}",
+        "questions": [
+          {
+            "type": "choice",
+            "name": "risk",
+            "instructions": "How risky is this change?",
+            "choices": [
+              {
+                "value": "low"
+              },
+              {
+                "value": "medium"
+              },
+              {
+                "value": "high"
+              }
+            ]
+          },
+          {
+            "type": "predicate",
+            "name": "needs-deeper-interrogation",
+            "instructions": "Should the spec get more interrogation before building?"
+          }
+        ]
+      },
+      "status": 404,
+      "contentType": "application/json",
+      "latencyMs": 77,
+      "body": {
+        "error": {
+          "message": "Model 'nosuch/decision-model' not found",
+          "type": "model_not_found",
+          "param": {
+            "modelId": "nosuch/decision-model"
+          }
+        }
+      }
+    }
+  ]
+}
