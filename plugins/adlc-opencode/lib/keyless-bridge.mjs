@@ -109,7 +109,9 @@ export function withTimeout(promise, ms, onTimeoutMessage, { signal, cancelledMe
     if (ms > 0) timer = setTimeout(() => reject(new Error(onTimeoutMessage)), ms);
     if (signal) {
       onAbort = () => reject(new Error(cancelledMessage));
-      signal.addEventListener('abort', onAbort, { once: true });
+      // An already-aborted signal never fires its listener.
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
     }
   });
   return Promise.race([promise, guards]).finally(() => {
@@ -172,19 +174,27 @@ export function makeSessionAsk(session, { title, permissions, directory, model, 
   return async (text, { agent, model: callModel, onMessages } = {}) => {
     if (signal?.aborted) throw new Error(`${label}: cancelled`);
     const ref = toModelRef(callModel) ?? modelRef;
-    const created = await withTimeout(
-      session.create({
-        title,
-        permissions: [...permissions],
-        ...(agent ? { agent } : {}),
-        ...(directory ? { location: { directory } } : {}),
-        ...(ref ? { model: ref } : {}),
-      }),
-      timeoutMs, `${label}: child session.create timed out`, { signal, cancelledMessage: `${label}: cancelled` });
+    const creating = Promise.resolve(session.create({
+      title,
+      permissions: [...permissions],
+      ...(agent ? { agent } : {}),
+      ...(directory ? { location: { directory } } : {}),
+      ...(ref ? { model: ref } : {}),
+    }));
+    let created;
+    try {
+      created = await withTimeout(creating, timeoutMs, `${label}: child session.create timed out`, { signal, cancelledMessage: `${label}: cancelled` });
+    } catch (err) {
+      // The create may still complete after the wait is abandoned; that child
+      // must not be left running.
+      creating.then((late) => late?.id && session.interrupt?.({ sessionID: late.id })).catch(() => {});
+      throw err;
+    }
     const sessionID = created?.id;
     if (!sessionID) throw new Error(`${label}: child session.create returned no session id`);
     let messages;
     try {
+      if (signal?.aborted) throw new Error(`${label}: cancelled`);
       messages = await withTimeout((async () => {
         await session.prompt({ sessionID, text });
         await session.wait({ sessionID });
@@ -230,7 +240,8 @@ export function makeAsk(generate, { model, timeoutMs = PROMPT_TIMEOUT_MS, signal
     try {
       const res = await withTimeout(
         generate.text({ prompt: text, ...(modelRef ? { model: modelRef } : {}) }, { signal: controller.signal }),
-        timeoutMs, 'keyless: generate.text timed out');
+        timeoutMs, 'keyless: generate.text timed out',
+        { signal: controller.signal, cancelledMessage: 'keyless: tool call was cancelled' });
       return typeof res?.text === 'string' ? res.text.trim() : '';
     } catch (err) {
       controller.abort();

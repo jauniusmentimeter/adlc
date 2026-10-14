@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractPrompts, runGateKeyless, makeAsk } from '../lib/keyless-bridge.mjs';
+import { extractPrompts, runGateKeyless, makeAsk, withTimeout } from '../lib/keyless-bridge.mjs';
 
 // ---- extractPrompts ----
 test('extractPrompts: single-prompt gate → one segment', () => {
@@ -130,6 +130,15 @@ test('makeAsk: an already-cancelled parent never starts a generation', async () 
   parent.abort();
   await assert.rejects(() => makeAsk(generate, { timeoutMs: 60_000, signal: parent.signal })('q'), /cancelled/);
   assert.equal(generate.seen.length, 0, 'no request was sent to the host');
+});
+
+test('makeAsk: cancelling the parent rejects at once even when the host drops the request signal', async () => {
+  const generate = { text: () => new Promise(() => {}) };
+  const parent = new AbortController();
+  const pending = makeAsk(generate, { timeoutMs: 60_000, signal: parent.signal })('q');
+  await new Promise((r) => setImmediate(r));
+  parent.abort();
+  await assert.rejects(() => pending, /keyless: tool call was cancelled/);
 });
 
 test('makeAsk: a successful answer leaves the request signal un-aborted', async () => {
@@ -259,6 +268,24 @@ test('makeSessionAsk: cancelling the parent interrupts the in-flight child and r
   parent.abort();
   await assert.rejects(() => pending, /lens: cancelled/);
   assert.deepEqual(interrupted, [{ sessionID: 'ses_child' }]);
+});
+
+test('makeSessionAsk: a cancel that lands while the child is being created interrupts it and never prompts it', async () => {
+  const session = mockSession();
+  const parent = new AbortController();
+  const interrupted = [];
+  session.interrupt = async (req) => { interrupted.push(req); };
+  const create = session.create;
+  session.create = async (req) => { const made = await create(req); parent.abort(); return made; };
+  await assert.rejects(() => makeSessionAsk(session, { title: 't', permissions: PERMS, label: 'lens', signal: parent.signal })('q'), /lens: cancelled/);
+  assert.equal(session.calls.prompt.length, 0);
+  assert.deepEqual(interrupted, [{ sessionID: 'ses_child' }]);
+});
+
+test('withTimeout: an already-aborted signal rejects with the cancelled message', async () => {
+  const ctl = new AbortController();
+  ctl.abort();
+  await assert.rejects(() => withTimeout(new Promise(() => {}), 60_000, 'timed out', { signal: ctl.signal, cancelledMessage: 'was cancelled' }), /was cancelled/);
 });
 
 test('makeSessionAsk: an already-cancelled parent creates no child at all', async () => {
